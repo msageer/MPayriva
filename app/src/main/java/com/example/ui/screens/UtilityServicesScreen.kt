@@ -239,15 +239,16 @@ fun UtilityServicesScreen(
                         Text("Select Mobile Network", style = MaterialTheme.typography.labelLarge)
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             NigerianProviders.telecomNetworks.forEach { net ->
                                 FilterChip(
                                     selected = selectedNetwork.clubKonnectCode == net.clubKonnectCode,
                                     onClick = { selectedNetwork = net },
-                                    label = { Text(net.shortCode) },
-                                    modifier = Modifier.weight(1f)
+                                    label = { Text(net.shortCode, maxLines = 1, softWrap = false) }
                                 )
                             }
                         }
@@ -354,7 +355,9 @@ fun UtilityServicesScreen(
 
                     ServiceFormCard(title = "Mobile Data Bundles (${allNetworkPlans.size} Live Plans)") {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             NigerianProviders.telecomNetworks.forEach { net ->
@@ -365,8 +368,7 @@ fun UtilityServicesScreen(
                                         selectedDataPlan = null
                                         dataSearchQuery = ""
                                     },
-                                    label = { Text(net.shortCode) },
-                                    modifier = Modifier.weight(1f)
+                                    label = { Text(net.shortCode, maxLines = 1, softWrap = false) }
                                 )
                             }
                         }

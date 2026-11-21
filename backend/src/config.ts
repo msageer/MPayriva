@@ -97,7 +97,16 @@ export async function logProviderEvent(params: {
   action: string;
   reference: string;
   statusCode: string;
-  outcome: "SUCCESS" | "PENDING" | "ERROR";
+  outcome:
+    | "SUCCESS"
+    | "PENDING"
+    | "ERROR"
+    | "CREDITED"
+    | "DUPLICATE_IGNORED"
+    | "IGNORED_INELIGIBLE"
+    | "UNMATCHED_CUSTOMER"
+    | "IGNORED_EVENT"
+    | "REJECTED_SIGNATURE";
   message: string;
 }) {
   await db.collection("providerLogs").add({

@@ -345,15 +345,16 @@ internal fun RechargeCardEpinForm(
         Text("Select Network", style = MaterialTheme.typography.labelLarge)
         Spacer(modifier = Modifier.height(6.dp))
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             availableNetworks.forEach { net ->
                 FilterChip(
                     selected = selectedNet.clubKonnectCode == net.clubKonnectCode,
                     onClick = { selectedNetCode = net.clubKonnectCode },
-                    label = { Text(net.shortCode) },
-                    modifier = Modifier.weight(1f)
+                    label = { Text(net.shortCode, maxLines = 1, softWrap = false) }
                 )
             }
         }
@@ -479,15 +480,16 @@ internal fun DataCardEpinForm(
             Text("Select Network", style = MaterialTheme.typography.labelLarge)
             Spacer(modifier = Modifier.height(6.dp))
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 availableNetworks.forEach { net ->
                     FilterChip(
                         selected = selectedNetCode == net.clubKonnectCode,
                         onClick = { selectedNetCode = net.clubKonnectCode },
-                        label = { Text(net.shortCode) },
-                        modifier = Modifier.weight(1f)
+                        label = { Text(net.shortCode, maxLines = 1, softWrap = false) }
                     )
                 }
             }
