@@ -450,7 +450,7 @@ class FintechViewModel(
             }
 
             val profile = (userProfileState.value as? UiState.Success)?.data
-            if (profile != null && profile.walletBalanceKobo < amountKobo) {
+            if (!serviceType.equals("AIRTIME", ignoreCase = true) && profile != null && profile.walletBalanceKobo < amountKobo) {
                 _isSubmitting.value = false
                 val err = IllegalStateException("Insufficient wallet balance. Please fund your wallet first.")
                 _actionBanner.value = ActionBanner(err.message!!, isError = true)

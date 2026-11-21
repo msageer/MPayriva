@@ -209,7 +209,8 @@ function extractVouchersFromResponse(
  */
 export function classifyClubKonnectStatus(
   providerRes: Record<string, unknown>,
-  isDataCard = false
+  isDataCard = false,
+  isRequery = false
 ): {
   resolution: ProviderResolution;
   reason: string;
@@ -220,10 +221,13 @@ export function classifyClubKonnectStatus(
 } {
   const statusStr = String(providerRes.status || providerRes.orderstatus || "").toUpperCase().trim();
   const statusCode = String(providerRes.statuscode || "").trim();
-  const remark = String(providerRes.remark || providerRes.message || statusStr || "Provider response").trim();
+  const rawRemark = String(providerRes.remark || providerRes.message || "").trim();
+  const reason = [statusStr, rawRemark]
+    .filter((v, idx, arr) => v && (idx === 0 || v.toUpperCase() !== arr[0].toUpperCase()))
+    .join(" — ") || String(providerRes.raw || "Provider response").slice(0, 180);
   const orderId =
     providerRes.orderid || providerRes.ORDER_ID
-      ? String(providerRes.orderid || providerRes.ORDER_ID)
+      ? String(providerRes.orderid || providerRes.ORDER_ID).trim()
       : null;
 
   const vouchers = extractVouchersFromResponse(providerRes, isDataCard);
@@ -235,7 +239,7 @@ export function classifyClubKonnectStatus(
         : vouchers.map((v, idx) => `#${idx + 1}: ${v.pin}${v.serialNumber ? ` (S/N: ${v.serialNumber})` : ""}`).join("\n");
     return {
       resolution: "SUCCESSFUL",
-      reason: remark || "EPIN_GENERATED",
+      reason: rawRemark || "EPIN_GENERATED",
       tokenOrPin: summaryToken,
       serialNumber: vouchers[0].serialNumber || null,
       orderId,
@@ -252,10 +256,14 @@ export function classifyClubKonnectStatus(
   const tokenOrPin = rawToken ? String(rawToken).trim() : null;
   const serialNumber = providerRes.sno || providerRes.serial ? String(providerRes.sno || providerRes.serial).trim() : null;
 
-  if (statusStr.includes("ORDER_COMPLETED") || statusCode === "200") {
+  if (
+    statusStr.includes("ORDER_COMPLETED") ||
+    statusStr.includes("ORDER_PROCESSED") ||
+    statusCode === "200"
+  ) {
     return {
       resolution: "SUCCESSFUL",
-      reason: remark || "ORDER_COMPLETED",
+      reason: rawRemark || "ORDER_COMPLETED",
       tokenOrPin,
       serialNumber,
       orderId,
@@ -273,7 +281,35 @@ export function classifyClubKonnectStatus(
   ) {
     return {
       resolution: "PENDING",
-      reason: remark || "ORDER_RECEIVED",
+      reason: reason || "ORDER_RECEIVED",
+      tokenOrPin,
+      serialNumber,
+      orderId,
+      vouchers: [],
+    };
+  }
+
+  // On requery (APIQueryV1.asp), NEVER falsely reverse an order just because a query lookup key or auth failed.
+  // Only reverse on requery when the provider explicitly confirms ORDER_CANCELLED or ORDER_FAILED.
+  if (isRequery) {
+    if (
+      statusStr.includes("ORDER_CANCELLED") ||
+      statusStr.includes("ORDER_FAILED") ||
+      statusStr === "FAILED" ||
+      statusCode === "600"
+    ) {
+      return {
+        resolution: "FAILED",
+        reason: reason || "Order cancelled by provider",
+        tokenOrPin: null,
+        serialNumber: null,
+        orderId,
+        vouchers: [],
+      };
+    }
+    return {
+      resolution: "PENDING",
+      reason: reason || "Awaiting provider confirmation",
       tokenOrPin,
       serialNumber,
       orderId,
@@ -296,7 +332,7 @@ export function classifyClubKonnectStatus(
   ) {
     return {
       resolution: "FAILED",
-      reason: remark || "Order declined by provider",
+      reason: reason || "Order declined by provider",
       tokenOrPin: null,
       serialNumber: null,
       orderId,
@@ -307,7 +343,7 @@ export function classifyClubKonnectStatus(
   // Default safe fallback: treat unrecognized responses as PENDING until APIQueryV1 confirms.
   return {
     resolution: "PENDING",
-    reason: remark || "Awaiting provider confirmation",
+    reason: reason || "Awaiting provider confirmation",
     tokenOrPin,
     serialNumber,
     orderId,

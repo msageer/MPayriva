@@ -159,6 +159,7 @@ fun UtilityServicesScreen(
     var phoneInput by remember { mutableStateOf(CurrencyFormatter.toLocalElevenDigitPhone(profile.phoneNumber)) }
     var amountNairaInput by remember { mutableStateOf("500") }
     var dataSearchQuery by remember { mutableStateOf("") }
+    var selectedDataCategory by remember { mutableStateOf("All") }
     var selectedDataPlan by remember { mutableStateOf<LiveCatalogPlanDto?>(null) }
 
     var selectedDiscoCode by remember { mutableStateOf(NigerianProviders.electricityDiscos.first().clubKonnectCode) }
@@ -343,7 +344,7 @@ fun UtilityServicesScreen(
                                         productCode = "airtime",
                                         productTitle = title,
                                         recipient = CurrencyFormatter.toLocalElevenDigitPhone(phoneInput),
-                                        amountKobo = sellingKobo + feeKobo,
+                                        amountKobo = faceKobo,
                                         summary = PurchaseSummaryItem(
                                             title = title,
                                             recipient = CurrencyFormatter.toLocalElevenDigitPhone(phoneInput),
@@ -374,17 +375,44 @@ fun UtilityServicesScreen(
                         it.resolvedServiceType() == ServiceType.DATA && it.providerCode == selectedNetwork.clubKonnectCode
                     }.map { it.toLivePlanDto() }
                     val allNetworkPlans = liveDataPlans.ifEmpty { fallbackDataPlans }
-                    val filteredPlans = remember(allNetworkPlans, dataSearchQuery) {
-                        val q = dataSearchQuery.trim()
-                        if (q.isEmpty()) allNetworkPlans
-                        else allNetworkPlans.filter {
-                            it.productName.contains(q, ignoreCase = true) ||
-                                it.dataVolume.contains(q, ignoreCase = true) ||
-                                it.validity.contains(q, ignoreCase = true)
+
+                    val groupedAllPlans = remember(allNetworkPlans) {
+                        CatalogCategoryClassifier.groupAndSort(
+                            plans = allNetworkPlans,
+                            order = CatalogCategoryClassifier.dataCategoryOrder,
+                            classifier = CatalogCategoryClassifier::resolveDataCategory
+                        )
+                    }
+                    val categoryCounts = remember(groupedAllPlans) {
+                        groupedAllPlans.map { (cat, list) -> cat to list.size }
+                    }
+                    val effectiveCategory = remember(selectedDataCategory, categoryCounts) {
+                        if (selectedDataCategory == "All" || categoryCounts.any { it.first == selectedDataCategory }) {
+                            selectedDataCategory
+                        } else {
+                            "All"
                         }
                     }
 
-                    ServiceFormCard(title = "Mobile Data Bundles (${allNetworkPlans.size} Live Plans)") {
+                    val filteredGroupedPlans = remember(groupedAllPlans, effectiveCategory, dataSearchQuery) {
+                        val q = dataSearchQuery.trim()
+                        groupedAllPlans
+                            .filter { (cat, _) -> effectiveCategory == "All" || cat == effectiveCategory }
+                            .mapNotNull { (cat, items) ->
+                                val matching = if (q.isEmpty()) items else items.filter {
+                                    it.productName.contains(q, ignoreCase = true) ||
+                                        it.dataVolume.contains(q, ignoreCase = true) ||
+                                        it.validity.contains(q, ignoreCase = true) ||
+                                        cat.contains(q, ignoreCase = true)
+                                }
+                                if (matching.isEmpty()) null else cat to matching
+                            }
+                    }
+                    val visiblePlanCount = filteredGroupedPlans.sumOf { it.second.size }
+
+                    ServiceFormCard(title = "Mobile Data Bundles (${allNetworkPlans.size} Plans)") {
+                        Text("Select Mobile Network", style = MaterialTheme.typography.labelLarge)
+                        Spacer(modifier = Modifier.height(6.dp))
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -397,6 +425,7 @@ fun UtilityServicesScreen(
                                     onClick = {
                                         selectedNetwork = net
                                         selectedDataPlan = null
+                                        selectedDataCategory = "All"
                                         dataSearchQuery = ""
                                     },
                                     label = { Text(net.shortCode, maxLines = 1, softWrap = false) }
@@ -425,30 +454,64 @@ fun UtilityServicesScreen(
                                 .fillMaxWidth()
                                 .testTag("data_plan_search_input")
                         )
+
+                        if (categoryCounts.size > 1) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "Plan Category",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            PlanCategoryFilterStrip(
+                                categories = categoryCounts,
+                                totalCount = allNetworkPlans.size,
+                                selectedCategory = effectiveCategory,
+                                onSelectCategory = { selectedDataCategory = it },
+                                testTagPrefix = "data"
+                            )
+                        }
+
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "Showing ${filteredPlans.size} of ${allNetworkPlans.size} ${selectedNetwork.shortCode} plans",
-                            style = MaterialTheme.typography.labelLarge
+                            text = if (effectiveCategory == "All") {
+                                "Showing $visiblePlanCount ${selectedNetwork.shortCode} plans grouped by category"
+                            } else {
+                                "Showing $visiblePlanCount ${selectedNetwork.shortCode} $effectiveCategory plans (lowest to highest)"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        if (filteredPlans.isEmpty()) {
+                        if (filteredGroupedPlans.isEmpty()) {
                             Text(
                                 text = if (isLoadingLive) "Loading ${selectedNetwork.shortCode} data bundles…"
-                                else "No matching ${selectedNetwork.shortCode} data plans found. Clear search or tap Refresh above.",
+                                else "No matching ${selectedNetwork.shortCode} data plans found. Try another category or clear search.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         } else {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                filteredPlans.forEach { plan ->
-                                    CatalogPlanCard(
-                                        title = plan.productName,
-                                        subtitle = listOf(plan.dataVolume, plan.validity).filter { it.isNotBlank() }.joinToString(" • "),
-                                        priceKobo = plan.sellingPriceKobo + plan.feeKobo,
-                                        selected = selectedDataPlan?.id == plan.id,
-                                        onClick = { selectedDataPlan = plan }
-                                    )
+                                filteredGroupedPlans.forEach { (categoryName, categoryPlans) ->
+                                    if (effectiveCategory == "All" && filteredGroupedPlans.size > 1) {
+                                        PlanCategorySectionHeader(
+                                            categoryName = categoryName,
+                                            planCount = categoryPlans.size
+                                        )
+                                    }
+                                    categoryPlans.forEach { plan ->
+                                        CatalogPlanCard(
+                                            title = plan.productName,
+                                            subtitle = listOf(categoryName, plan.dataVolume, plan.validity)
+                                                .filter { it.isNotBlank() }
+                                                .distinct()
+                                                .joinToString(" • "),
+                                            priceKobo = plan.sellingPriceKobo + plan.feeKobo,
+                                            selected = selectedDataPlan?.id == plan.id,
+                                            onClick = { selectedDataPlan = plan }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -626,7 +689,7 @@ fun UtilityServicesScreen(
                                         productCode = meterType,
                                         productTitle = title,
                                         recipient = meterNumber,
-                                        amountKobo = powerKobo + feeKobo,
+                                        amountKobo = powerKobo,
                                         meterType = meterType,
                                         summary = PurchaseSummaryItem(
                                             title = title,

@@ -115,8 +115,11 @@ async function reconcileTransactionWithClubKonnect(reference: string) {
     };
   }
 
-  const queryRes = await clubKonnect.queryTransactionStatus(reference);
-  const classified = classifyClubKonnectStatus(queryRes, txData.type === "DATA_CARD");
+  const queryRes = await clubKonnect.queryTransactionStatus({
+    orderId: txData.providerOrderId ? String(txData.providerOrderId) : null,
+    requestId: reference,
+  });
+  const classified = classifyClubKonnectStatus(queryRes, txData.type === "DATA_CARD", true);
 
   if (classified.resolution === "SUCCESSFUL") {
     await txRef.update({
@@ -149,7 +152,7 @@ async function reconcileTransactionWithClubKonnect(reference: string) {
       notFound: false as const,
       status: "REVERSED",
       tokenOrPin: null,
-      message: "Provider confirmed cancellation. Wallet automatically refunded.",
+      message: `Order cancelled and refunded: ${classified.reason}`,
     };
   }
 
@@ -508,15 +511,21 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
       .where("enabled", "==", true)
       .get();
 
-    let matchedCatalog = catalogSnap.docs
-      .map((d) => d.data())
-      .find(
-        (item) =>
-          (normalizedProduct && item.productCode === normalizedProduct && item.providerCode === normalizedProvider) ||
-          (normalizedProduct && item.productCode === normalizedProduct) ||
-          item.providerCode === normalizedProvider ||
-          item.providerCode === "ALL_DISCOS"
-      );
+    const isVariableAmountService =
+      normalizedService === "AIRTIME" ||
+      normalizedService === "ELECTRICITY" ||
+      normalizedService === "BETTING";
+
+    const adminCatalogItems = catalogSnap.docs.map((d) => d.data());
+    let matchedCatalog = adminCatalogItems.find((item) => {
+      const itemProd = String(item.productCode || "").trim().toLowerCase();
+      const itemProv = String(item.providerCode || "").trim().toLowerCase();
+      const reqProd = normalizedProduct.toLowerCase();
+      const reqProv = normalizedProvider.toLowerCase();
+      if (reqProd && itemProd === reqProd && itemProv === reqProv) return true;
+      if (isVariableAmountService && (itemProv === reqProv || itemProv === "all_discos")) return true;
+      return false;
+    });
 
     // Enforce Admin Utility Service Toggles from /platformConfig/branding
     const brandingSnap = await db.collection("platformConfig").doc("branding").get();
@@ -556,7 +565,8 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
       catalog: matchedCatalog,
     });
 
-    const reference = `MSGR-${Date.now()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    // Pure alphanumeric RequestID (no hyphens) for maximum ClubKonnect API compatibility
+    const reference = `MSGR${Date.now()}${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
 
     // Steps 7–9: Atomic balance validation, idempotency lock, and double-entry debit
     await atomicReserveAndCreatePurchase({
@@ -671,7 +681,28 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
           throw new Error(`Unsupported service type: ${normalizedService}`);
       }
 
-      const classified = classifyClubKonnectStatus(providerRes, normalizedService === "DATA_CARD");
+      let classified = classifyClubKonnectStatus(providerRes, normalizedService === "DATA_CARD", false);
+
+      // ClubKonnect frequently returns ORDER_RECEIVED (code 100) and settles within 2-3 seconds.
+      // Perform one quick verification poll by OrderID before returning PENDING to the customer.
+      if (classified.resolution === "PENDING" && classified.orderId) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        try {
+          const pollRes = await clubKonnect.queryTransactionStatus({
+            orderId: classified.orderId,
+            requestId: reference,
+          });
+          const polled = classifyClubKonnectStatus(pollRes, normalizedService === "DATA_CARD", true);
+          if (polled.resolution === "SUCCESSFUL" || polled.resolution === "FAILED") {
+            classified = {
+              ...polled,
+              orderId: polled.orderId || classified.orderId,
+            };
+          }
+        } catch {
+          // Keep initial PENDING state — never reverse on poll network hiccup
+        }
+      }
 
       if (classified.resolution === "SUCCESSFUL") {
         await db.collection("transactions").doc(reference).update({
@@ -714,7 +745,7 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
           status: "PENDING",
           transactionId: reference,
           reference,
-          message: "Order received by provider. Status will update once confirmed.",
+          message: "Order accepted and processing. Status will update automatically once delivery confirms.",
         });
       } else {
         await atomicReverseConfirmedFailure(reference, classified.reason);
@@ -778,9 +809,29 @@ app.post("/api/v1/transactions/:reference/requery", requireAuth, async (req: Aut
 
 // 6B. CLUBKONNECT ASYNC CALLBACK (Never blindly trust callback payload — independently requery APIQueryV1.asp)
 async function handleClubKonnectCallback(req: Request, res: Response) {
-  const reference = String(
+  let reference = String(
     req.query?.requestid || req.query?.RequestID || req.body?.requestid || req.body?.RequestID || ""
   ).trim();
+  const orderId = String(
+    req.query?.orderid || req.query?.OrderID || req.body?.orderid || req.body?.OrderID || ""
+  ).trim();
+
+  // ClubKonnect callbacks frequently include orderid with an empty requestid — resolve by providerOrderId!
+  if ((!reference || !/^[A-Za-z0-9_-]{6,80}$/.test(reference)) && orderId) {
+    try {
+      const byOrder = await db
+        .collection("transactions")
+        .where("providerOrderId", "==", orderId)
+        .limit(1)
+        .get();
+      if (!byOrder.empty) {
+        reference = byOrder.docs[0].id;
+      }
+    } catch {
+      // Ignore lookup error and fall through
+    }
+  }
+
   if (!reference || !/^[A-Za-z0-9_-]{6,80}$/.test(reference)) {
     res.status(200).json({ received: true, ignored: true });
     return;

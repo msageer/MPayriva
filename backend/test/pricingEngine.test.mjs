@@ -184,3 +184,17 @@ test("DATA_CARD and BETTING compute authorized pricing cleanly", () => {
   assert.equal(bet.totalDebitKobo, 205000);
 });
 
+test("ClubKonnect requery mode keeps lookup errors PENDING instead of falsely reversing", () => {
+  const badKey = classifyClubKonnectStatus({ status: "INVALID_REQUESTID" }, false, true);
+  assert.equal(badKey.resolution, "PENDING");
+
+  const cancelled = classifyClubKonnectStatus(
+    { status: "ORDER_CANCELLED", remark: "Network unavailable" },
+    false,
+    true
+  );
+  assert.equal(cancelled.resolution, "FAILED");
+  assert.match(cancelled.reason, /ORDER_CANCELLED/);
+});
+
+

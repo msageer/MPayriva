@@ -75,6 +75,75 @@ function extractVolumeAndValidity(productName: string): { volume: string; validi
   };
 }
 
+function classifyDataCategory(productName: string, validity: string): string {
+  const text = `${productName} ${validity}`.toLowerCase();
+  if (/\bsme\b|\bsme\s*2\b/.test(text)) return "SME";
+  if (/\bcorporate\b|\bcg\b|\bc\.g\b|\bgifting\b/.test(text)) return "Corporate / CG";
+  if (
+    /\bawoof\b|\bpromo\b|\bbonus\b|\bsocial\b|\bwhatsapp\b|\btiktok\b|\binstagram\b|\byoutube\b|\bnight\b|\bweekend\b|\bopera\b|\bstream\b|\bcampus\b|\bxtra\b/.test(
+      text
+    )
+  ) {
+    return "Awoof / Promo";
+  }
+  if (
+    /\b(60|90|120|180|365)\s*day|\b(2|3|4|6|12)\s*month|\b1\s*year|\byearly\b|\bannual\b|\bmega\b|\brouter\b|\bmifi\b|\b5g\b|\bbroadband\b|\bhome\b/.test(
+      text
+    )
+  ) {
+    return "Mega / Multi-Month";
+  }
+  if (/\b(1|2|3|4|5)\s*day|\bdaily\b|\b24\s*h|\b48\s*h/.test(text)) return "Daily";
+  if (/\b(7|14)\s*day|\bweekly\b|\b(1|2)\s*week/.test(text)) return "Weekly";
+  if (/\b(28|30|31)\s*day|\bmonthly\b|\b1\s*month/.test(text)) return "Monthly";
+  return "Direct";
+}
+
+function classifyBroadbandCategory(productName: string, validity: string): string {
+  const text = `${productName} ${validity}`.toLowerCase();
+  if (/\bvoice\b|\btalk\b|\bcall\b|\bairtime\b|\bmin(ute)?s?\b/.test(text)) return "Voice & Airtime";
+  if (/\bunlimited\b|\balways\s*on\b|\bfreedom\b|\bwild\b|\bsuper\b/.test(text)) return "Unlimited";
+  if (
+    /\b(60|90|120|180|365)\s*day|\b(2|3|4|6|12)\s*month|\b1\s*year|\bannual\b|\byearly\b|\bjumbo\b/.test(text)
+  ) {
+    return "Multi-Month & Annual";
+  }
+  if (/\b(1|2|3|4|5)\s*day|\bdaily\b|\bflexi\b|\blite\b|\bmini\b|\bweekend\b|\bnight\b|\bmidnite\b|\bmidnight\b/.test(text)) {
+    return "Daily & Flexi";
+  }
+  if (/\b(7|14)\s*day|\bweekly\b|\b(1|2)\s*week/.test(text)) return "Weekly";
+  if (/\b(28|30|31)\s*day|\bmonthly\b|\b1\s*month|\banytime\b|\bbigga\b|\bbuma\b|\bvalue\b|\bclassic\b/.test(text)) {
+    return "Monthly";
+  }
+  return "Standard";
+}
+
+const DATA_CATEGORY_ORDER = [
+  "SME",
+  "Corporate / CG",
+  "Daily",
+  "Weekly",
+  "Monthly",
+  "Awoof / Promo",
+  "Mega / Multi-Month",
+  "Direct",
+];
+
+const BROADBAND_CATEGORY_ORDER = [
+  "Daily & Flexi",
+  "Weekly",
+  "Monthly",
+  "Unlimited",
+  "Multi-Month & Annual",
+  "Voice & Airtime",
+  "Standard",
+];
+
+function categoryRank(order: string[], cat: string): number {
+  const idx = order.indexOf(cat);
+  return idx >= 0 ? idx : order.length;
+}
+
 function parsePercentage(raw: unknown): number {
   const num = Number(String(raw ?? "").replace(/%/g, "").trim());
   if (!Number.isFinite(num) || num < 0) return 0;
@@ -165,6 +234,14 @@ function parseNestedProductArray(
           availabilityFlag !== "FALSE" &&
           availabilityFlag !== "0";
 
+        const resolvedValidity = String(obj.VALIDITY || validity || "");
+        const resolvedCategory =
+          serviceType === "DATA" || serviceType === "DATA_CARD"
+            ? classifyDataCategory(cleanName, resolvedValidity)
+            : serviceType === "SMILE" || serviceType === "SPECTRANET"
+              ? classifyBroadbandCategory(cleanName, resolvedValidity)
+              : nextGroup || categoryGroup || nextName;
+
         results.push({
           id: key.replace(/[^a-z0-9_-]/g, "_"),
           serviceType,
@@ -172,8 +249,8 @@ function parseNestedProductArray(
           providerName: nextName || defaultProviderName || nextCode,
           productCode: cleanCode,
           productName: cleanName,
-          categoryGroup: nextGroup || categoryGroup || nextName,
-          validity: String(obj.VALIDITY || validity || ""),
+          categoryGroup: resolvedCategory,
+          validity: resolvedValidity,
           dataVolume: String(obj.DATA_VOLUME || volume || ""),
           providerCostKobo: costKobo,
           sellingPriceKobo: defaultSellingFromCostKobo(costKobo, serviceType),
@@ -685,7 +762,12 @@ export async function getLiveStorefrontCatalog(
   const data = applyAdminCatalogOverrides(
     dataRes.status === "fulfilled" ? parseNestedProductArray(dataRes.value, "DATA") : [],
     adminDocs
-  ).sort((a, b) => a.providerCode.localeCompare(b.providerCode) || a.sellingPriceKobo - b.sellingPriceKobo);
+  ).sort(
+    (a, b) =>
+      a.providerCode.localeCompare(b.providerCode) ||
+      categoryRank(DATA_CATEGORY_ORDER, a.categoryGroup) - categoryRank(DATA_CATEGORY_ORDER, b.categoryGroup) ||
+      a.sellingPriceKobo - b.sellingPriceKobo
+  );
 
   const electricity = applyAdminCatalogOverrides(
     parseElectricityDiscos(discoRes.status === "fulfilled" ? discoRes.value : {}),
@@ -737,7 +819,12 @@ export async function getLiveStorefrontCatalog(
     spectranetRes.status === "fulfilled"
       ? parseNestedProductArray(spectranetRes.value, "SPECTRANET", "spectranet", "Spectranet")
       : [];
-  const broadband = applyAdminCatalogOverrides([...smilePlans, ...spectranetPlans], adminDocs);
+  const broadband = applyAdminCatalogOverrides([...smilePlans, ...spectranetPlans], adminDocs).sort(
+    (a, b) =>
+      a.serviceType.localeCompare(b.serviceType) ||
+      categoryRank(BROADBAND_CATEGORY_ORDER, a.categoryGroup) - categoryRank(BROADBAND_CATEGORY_ORDER, b.categoryGroup) ||
+      a.sellingPriceKobo - b.sellingPriceKobo
+  );
 
   const betting = applyAdminCatalogOverrides(
     bettingRes.status === "fulfilled" ? parseBettingCompanies(bettingRes.value) : [],
@@ -849,10 +936,11 @@ export async function findAuthorizedLiveProduct(
                     ? catalog.betting
                     : [];
 
+  const isVariableSvc = svc === "AIRTIME" || svc === "ELECTRICITY" || svc === "BETTING";
   const matched =
     pool.find((i) => i.providerCode.toLowerCase() === prov && i.productCode.toLowerCase() === prod) ||
-    pool.find((i) => prod && i.productCode.toLowerCase() === prod) ||
-    pool.find((i) => i.providerCode.toLowerCase() === prov);
+    (prod ? pool.find((i) => i.productCode.toLowerCase() === prod) : undefined) ||
+    (isVariableSvc ? pool.find((i) => i.providerCode.toLowerCase() === prov) : undefined);
 
   return { pricingDoc: matched || null, available: true };
 }

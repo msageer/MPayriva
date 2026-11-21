@@ -8,6 +8,26 @@ import { CONFIG, logProviderEvent } from "./config";
 const BASE_URL = "https://www.nellobytesystems.com";
 const REQUEST_TIMEOUT_MS = 25_000;
 
+function normalizeNgPhone(raw: string): string {
+  const digits = String(raw || "").replace(/[^0-9]/g, "");
+  if (digits.startsWith("234") && digits.length === 13) {
+    return `0${digits.slice(3)}`;
+  }
+  return digits || String(raw || "").trim();
+}
+
+function summarizeProviderResponse(parsed: Record<string, unknown>, fallbackStatusText: string): string {
+  const parts: string[] = [];
+  if (parsed.statuscode !== undefined && parsed.statuscode !== "") parts.push(`code=${parsed.statuscode}`);
+  if (parsed.status) parts.push(`status=${parsed.status}`);
+  if (parsed.orderstatus && parsed.orderstatus !== parsed.status) parts.push(`orderstatus=${parsed.orderstatus}`);
+  if (parsed.orderid) parts.push(`orderid=${parsed.orderid}`);
+  if (parsed.remark) parts.push(`remark=${parsed.remark}`);
+  if (parsed.message && parsed.message !== parsed.remark) parts.push(`msg=${parsed.message}`);
+  if (parsed.raw) parts.push(`raw=${String(parsed.raw).slice(0, 140)}`);
+  return (parts.join(" | ") || fallbackStatusText).slice(0, 350);
+}
+
 export class ClubKonnectClient {
   get isConfigured(): boolean {
     return Boolean(CONFIG.clubKonnectUserId && CONFIG.clubKonnectApiKey);
@@ -56,9 +76,9 @@ export class ClubKonnectClient {
         provider: "CLUBKONNECT",
         action: endpoint,
         reference,
-        statusCode: String(res.status),
+        statusCode: String(parsed.statuscode || res.status),
         outcome: res.ok ? "SUCCESS" : "ERROR",
-        message: String(parsed.status || parsed.remark || parsed.message || res.statusText).slice(0, 300),
+        message: summarizeProviderResponse(parsed, res.statusText),
       });
     }
 
@@ -129,9 +149,9 @@ export class ClubKonnectClient {
     return this.getJson(
       "APIAirtimeV1.asp",
       {
-        MobileNetwork: params.mobileNetwork,
-        Amount: String(params.amountNaira),
-        MobileNumber: params.mobileNumber,
+        MobileNetwork: params.mobileNetwork.trim(),
+        Amount: String(Math.round(params.amountNaira)),
+        MobileNumber: normalizeNgPhone(params.mobileNumber),
         RequestID: params.requestId,
         CallBackURL: CONFIG.callbackBaseUrl ? `${CONFIG.callbackBaseUrl}/webhooks/clubkonnect` : "",
       },
@@ -148,9 +168,9 @@ export class ClubKonnectClient {
     return this.getJson(
       "APIDatabundleV1.asp",
       {
-        MobileNetwork: params.mobileNetwork,
-        DataPlan: params.dataPlan,
-        MobileNumber: params.mobileNumber,
+        MobileNetwork: params.mobileNetwork.trim(),
+        DataPlan: params.dataPlan.trim(),
+        MobileNumber: normalizeNgPhone(params.mobileNumber),
         RequestID: params.requestId,
         CallBackURL: CONFIG.callbackBaseUrl ? `${CONFIG.callbackBaseUrl}/webhooks/clubkonnect` : "",
       },
@@ -376,9 +396,15 @@ export class ClubKonnectClient {
   }
 
   /**
-   * Requery existing transaction status — NEVER blindly resubmit a timed-out order.
+   * Requery existing transaction status — prefers ClubKonnect OrderID when available,
+   * falling back to RequestID. NEVER blindly resubmits a timed-out order.
    */
-  async queryTransactionStatus(requestId: string) {
-    return this.getJson("APIQueryV1.asp", { RequestID: requestId }, requestId);
+  async queryTransactionStatus(params: { orderId?: string | null; requestId?: string | null }) {
+    const cleanOrderId = String(params.orderId || "").trim();
+    const cleanRequestId = String(params.requestId || "").trim();
+    const queryParams: Record<string, string> = cleanOrderId
+      ? { OrderID: cleanOrderId }
+      : { RequestID: cleanRequestId };
+    return this.getJson("APIQueryV1.asp", queryParams, cleanRequestId || cleanOrderId || "REQUERY");
   }
 }

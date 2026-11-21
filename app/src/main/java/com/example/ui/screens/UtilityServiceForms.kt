@@ -1,9 +1,11 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -14,14 +16,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.ConfirmationNumber
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -30,6 +37,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -46,20 +54,29 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.CurrencyFormatter
 import com.example.data.model.NigerianProviders
 import com.example.data.model.ServiceType
+import com.example.data.model.TelecomNetwork
 import com.example.data.model.UserProfile
 import com.example.data.remote.CustomerVerificationResponse
 import com.example.data.remote.LiveCatalogPlanDto
 import com.example.data.remote.LiveServiceAvailabilityGroupDto
 import com.example.data.remote.LiveStorefrontCatalogResponse
 import com.example.ui.components.PurchaseSummaryItem
+import com.example.ui.theme.EmeraldBright
 import com.example.ui.theme.JetBrainsMono
+import com.example.ui.theme.NavyContainer
+import com.example.ui.theme.NavyDeep
+import com.example.ui.theme.PureWhite
 import com.example.ui.theme.StatusFailed
 import com.example.ui.theme.StatusFailedBg
 import com.example.ui.theme.StatusPending
@@ -275,6 +292,226 @@ internal fun ServiceAvailabilityBanner(
     }
 }
 
+private fun networkBrandAccent(code: String): Pair<Color, Color> = when (code) {
+    "01" -> Color(0xFFD97706) to Color(0xFFFEF3C7) // MTN Amber/Gold
+    "04" -> Color(0xFFDC2626) to Color(0xFFFEE2E2) // Airtel Crimson
+    "02" -> Color(0xFF15803D) to Color(0xFFDCFCE7) // Glo Emerald
+    "03" -> Color(0xFF4D7C0F) to Color(0xFFECFCCB) // 9mobile Lime
+    else -> NavyDeep to Color(0xFFE9EEF7)
+}
+
+@Composable
+private fun CompactStockStatusPill(
+    title: String,
+    isLoading: Boolean,
+    available: Boolean,
+    statusMessage: String,
+    onRefresh: () -> Unit
+) {
+    val bg = when {
+        isLoading -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+        available -> StatusSuccessBg
+        else -> StatusFailedBg
+    }
+    val tint = when {
+        isLoading -> MaterialTheme.colorScheme.primary
+        available -> StatusSuccess
+        else -> StatusFailed
+    }
+    val badge = when {
+        isLoading -> "Checking stock…"
+        available -> "In Stock • Printable PDF"
+        else -> "Out of Stock"
+    }
+
+    Surface(
+        color = bg,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.25f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("epin_availability_banner")
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(tint)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "$title — $badge",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = tint,
+                    fontWeight = FontWeight.Bold
+                )
+                if (!available && !isLoading) {
+                    Text(
+                        text = statusMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            IconButton(
+                onClick = onRefresh,
+                modifier = Modifier.testTag("check_epin_availability_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = "Refresh stock status",
+                    tint = tint,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NetworkTileSelector(
+    networks: List<TelecomNetwork>,
+    selectedCode: String,
+    onSelect: (TelecomNetwork) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        networks.forEach { net ->
+            val selected = net.clubKonnectCode == selectedCode
+            val (brandFg, brandBg) = networkBrandAccent(net.clubKonnectCode)
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = if (selected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                border = BorderStroke(
+                    width = if (selected) 2.dp else 1.dp,
+                    color = if (selected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outlineVariant
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onSelect(net) }
+                    .testTag("epin_net_${net.clubKonnectCode}")
+            ) {
+                Column(
+                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(brandBg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = net.shortCode.take(1).uppercase(),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = brandFg,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = net.shortCode,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuantityStepperSection(
+    label: String,
+    quantity: Int,
+    presets: List<Int>,
+    onQuantityChange: (Int) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                Text(
+                    text = "Max 50 vouchers per batch",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { if (quantity > 1) onQuantityChange(quantity - 1) },
+                        enabled = quantity > 1,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(Icons.Filled.Remove, contentDescription = "Decrease quantity")
+                    }
+                    Text(
+                        text = quantity.toString(),
+                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMono),
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                    IconButton(
+                        onClick = { if (quantity < 50) onQuantityChange(quantity + 1) },
+                        enabled = quantity < 50,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = "Increase quantity")
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            presets.forEach { preset ->
+                val active = quantity == preset
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (active) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = if (active) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(36.dp)
+                        .clickable { onQuantityChange(preset) }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "$preset PIN${if (preset > 1) "s" else ""}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (active) PureWhite else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 internal fun RechargeCardEpinForm(
     profile: UserProfile,
@@ -317,65 +554,176 @@ internal fun RechargeCardEpinForm(
     val unitSellingKobo = matchedItem?.sellingPriceKobo ?: (selectedDenomNaira * 100L)
     val totalKobo = unitSellingKobo * quantity
 
-    ServiceFormCard(title = "Recharge Card Printing (e-PIN)") {
-        ServiceAvailabilityBanner(
-            title = "Recharge e-PIN Stock",
+    ServiceFormCard(title = "Recharge Card Printing") {
+        CompactStockStatusPill(
+            title = "Voucher Stock",
             isLoading = isLoadingLive,
             available = isAvailable,
             statusMessage = statusMsg,
-            onCheckAvailability = onRefreshAvailability
+            onRefresh = onRefreshAvailability
         )
-        Spacer(modifier = Modifier.height(12.dp))
-        Text("Select Network", style = MaterialTheme.typography.labelLarge)
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            availableNetworks.forEach { net ->
-                FilterChip(
-                    selected = selectedNet.clubKonnectCode == net.clubKonnectCode,
-                    onClick = { selectedNetCode = net.clubKonnectCode },
-                    label = { Text(net.shortCode, maxLines = 1, softWrap = false) }
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(10.dp))
-        Text("Denomination", style = MaterialTheme.typography.labelLarge)
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            denoms.forEach { denom ->
-                FilterChip(
-                    selected = selectedDenomNaira == denom,
-                    onClick = { selectedDenomNaira = denom },
-                    label = { Text("₦$denom") }
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(10.dp))
-        Text("Quantity: $quantity PINs", style = MaterialTheme.typography.labelLarge)
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(1, 5, 10, 20).forEach { q ->
-                FilterChip(
-                    selected = quantity == q,
-                    onClick = { quantity = q },
-                    label = { Text("$q") }
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(12.dp))
-        PricePreviewBar(
-            label = "Total for $quantity × ₦$selectedDenomNaira e-PINs",
-            amountKobo = totalKobo
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("1. Choose Mobile Network", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(8.dp))
+        NetworkTileSelector(
+            networks = availableNetworks,
+            selectedCode = selectedNet.clubKonnectCode,
+            onSelect = { selectedNetCode = it.clubKonnectCode }
         )
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("2. Select Voucher Denomination", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(8.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            denoms.chunked(2).forEach { rowDenoms ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    rowDenoms.forEach { denom ->
+                        val selected = selectedDenomNaira == denom
+                        val itemPriceKobo = networkItems
+                            .firstOrNull { it.productCode == denom.toString() }
+                            ?.sellingPriceKobo
+                            ?: (denom * 100L)
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(
+                                width = if (selected) 2.dp else 1.dp,
+                                color = if (selected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outlineVariant
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { selectedDenomNaira = denom }
+                                .testTag("epin_denom_$denom")
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "₦$denom",
+                                        style = MaterialTheme.typography.titleLarge.copy(fontFamily = JetBrainsMono),
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (selected) {
+                                        Icon(
+                                            imageVector = Icons.Filled.CheckCircle,
+                                            contentDescription = "Selected",
+                                            tint = MaterialTheme.colorScheme.secondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "${selectedNet.shortCode} Recharge PIN",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Unit: ${CurrencyFormatter.formatKobo(itemPriceKobo)}",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                    if (rowDenoms.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        QuantityStepperSection(
+            label = "3. Number of e-PINs",
+            quantity = quantity,
+            presets = listOf(1, 5, 10, 20),
+            onQuantityChange = { quantity = it }
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+        // Voucher Print Preview Summary Card
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = NavyDeep),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Brush.linearGradient(listOf(NavyDeep, NavyContainer)))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Filled.ConfirmationNumber,
+                            contentDescription = null,
+                            tint = EmeraldBright,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "${selectedNet.shortCode} ₦$selectedDenomNaira × $quantity PIN${if (quantity > 1) "s" else ""}",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = PureWhite,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Surface(
+                        color = EmeraldBright.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Text(
+                            text = "PDF Ready",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = EmeraldBright,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = "Dial *311*PIN# to load • Printable A4 PDF & thermal voucher sheet saved in History",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PureWhite.copy(alpha = 0.78f)
+                )
+                HorizontalDivider(color = PureWhite.copy(alpha = 0.14f))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Total Payable",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = PureWhite.copy(alpha = 0.85f)
+                    )
+                    Text(
+                        text = CurrencyFormatter.formatKobo(totalKobo),
+                        style = MaterialTheme.typography.titleLarge.copy(fontFamily = JetBrainsMono),
+                        color = PureWhite,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(14.dp))
         Button(
             onClick = {
@@ -405,13 +753,13 @@ internal fun RechargeCardEpinForm(
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(50.dp)
+                .height(52.dp)
                 .testTag("epin_continue_button")
         ) {
             Icon(Icons.Filled.Print, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = if (isAvailable) "Purchase & Generate Printable PDF" else "Currently Out of Stock",
+                text = if (isAvailable) "Purchase & Print e-PINs (${CurrencyFormatter.formatKobo(totalKobo)})" else "Currently Out of Stock",
                 fontWeight = FontWeight.Bold
             )
         }
@@ -443,6 +791,7 @@ internal fun DataCardEpinForm(
     var selectedNetCode by remember(availableNetworks) { mutableStateOf(availableNetworks.first().clubKonnectCode) }
     val networkPlans = remember(liveItems, selectedNetCode) {
         liveItems.filter { it.providerCode == selectedNetCode }
+            .sortedBy { it.sellingPriceKobo + it.feeKobo }
     }
     var selectedPlan by remember(networkPlans) { mutableStateOf(networkPlans.firstOrNull()) }
     var quantity by remember { mutableIntStateOf(1) }
@@ -451,34 +800,25 @@ internal fun DataCardEpinForm(
     val totalKobo = unitKobo * quantity
 
     ServiceFormCard(title = "Data Card Printing (e-PIN)") {
-        ServiceAvailabilityBanner(
+        CompactStockStatusPill(
             title = "Data Card Stock",
             isLoading = isLoadingLive,
             available = isAvailable,
             statusMessage = statusMsg,
-            onCheckAvailability = onRefreshAvailability
+            onRefresh = onRefreshAvailability
         )
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         if (isAvailable && liveItems.isNotEmpty()) {
-            Text("Select Network", style = MaterialTheme.typography.labelLarge)
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                availableNetworks.forEach { net ->
-                    FilterChip(
-                        selected = selectedNetCode == net.clubKonnectCode,
-                        onClick = { selectedNetCode = net.clubKonnectCode },
-                        label = { Text(net.shortCode, maxLines = 1, softWrap = false) }
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Text("Select Printable Data Card Plan", style = MaterialTheme.typography.labelLarge)
+            Text("1. Choose Mobile Network", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            NetworkTileSelector(
+                networks = availableNetworks,
+                selectedCode = selectedNetCode,
+                onSelect = { selectedNetCode = it.clubKonnectCode }
+            )
+            Spacer(modifier = Modifier.height(14.dp))
+            Text("2. Select Printable Data Card Plan", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
             Spacer(modifier = Modifier.height(8.dp))
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 networkPlans.forEach { plan ->
@@ -491,19 +831,14 @@ internal fun DataCardEpinForm(
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(10.dp))
-            Text("Quantity: $quantity Data Card${if (quantity > 1) "s" else ""}", style = MaterialTheme.typography.labelLarge)
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(1, 5, 10, 20).forEach { q ->
-                    FilterChip(
-                        selected = quantity == q,
-                        onClick = { quantity = q },
-                        label = { Text("$q") }
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(14.dp))
+            QuantityStepperSection(
+                label = "3. Number of Data Cards",
+                quantity = quantity,
+                presets = listOf(1, 5, 10, 20),
+                onQuantityChange = { quantity = it }
+            )
+            Spacer(modifier = Modifier.height(14.dp))
             PricePreviewBar("Total for $quantity Data Card e-PINs", totalKobo)
             Spacer(modifier = Modifier.height(14.dp))
             Button(
@@ -535,7 +870,7 @@ internal fun DataCardEpinForm(
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp)
+                    .height(52.dp)
                     .testTag("datacard_continue_button")
             ) {
                 Icon(Icons.Filled.Print, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -577,19 +912,55 @@ internal fun BroadbandServiceForm(
     }
     var smileAccount by remember { mutableStateOf("") }
     var spectranetQty by remember { mutableIntStateOf(1) }
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedCategory by remember { mutableStateOf("All") }
 
     val activePlans = remember(broadbandPlans, provider) {
         broadbandPlans.filter { it.serviceType.equals(provider, ignoreCase = true) }
     }
+    val groupedAllPlans = remember(activePlans) {
+        CatalogCategoryClassifier.groupAndSort(
+            plans = activePlans,
+            order = CatalogCategoryClassifier.broadbandCategoryOrder,
+            classifier = CatalogCategoryClassifier::resolveBroadbandCategory
+        )
+    }
+    val categoryCounts = remember(groupedAllPlans) {
+        groupedAllPlans.map { (cat, list) -> cat to list.size }
+    }
+    val effectiveCategory = remember(selectedCategory, categoryCounts) {
+        if (selectedCategory == "All" || categoryCounts.any { it.first == selectedCategory }) {
+            selectedCategory
+        } else {
+            "All"
+        }
+    }
+    val filteredGroupedPlans = remember(groupedAllPlans, effectiveCategory, searchQuery) {
+        val q = searchQuery.trim()
+        groupedAllPlans
+            .filter { (cat, _) -> effectiveCategory == "All" || cat == effectiveCategory }
+            .mapNotNull { (cat, items) ->
+                val matching = if (q.isEmpty()) items else items.filter {
+                    it.productName.contains(q, ignoreCase = true) ||
+                        it.validity.contains(q, ignoreCase = true) ||
+                        it.dataVolume.contains(q, ignoreCase = true) ||
+                        cat.contains(q, ignoreCase = true)
+                }
+                if (matching.isEmpty()) null else cat to matching
+            }
+    }
+    val visibleCount = filteredGroupedPlans.sumOf { it.second.size }
     var selectedPlan by remember(activePlans) { mutableStateOf(activePlans.firstOrNull()) }
 
-    ServiceFormCard(title = "Broadband Internet") {
+    ServiceFormCard(title = "Broadband Internet (${activePlans.size} Packages)") {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (smileEnabled) {
                 FilterChip(
                     selected = provider == "SMILE",
                     onClick = {
                         provider = "SMILE"
+                        selectedCategory = "All"
+                        searchQuery = ""
                         onClearVerification()
                     },
                     label = { Text("Smile 4G Direct") }
@@ -600,6 +971,8 @@ internal fun BroadbandServiceForm(
                     selected = provider == "SPECTRANET",
                     onClick = {
                         provider = "SPECTRANET"
+                        selectedCategory = "All"
+                        searchQuery = ""
                         onClearVerification()
                     },
                     label = { Text("Spectranet e-PIN") }
@@ -640,38 +1013,89 @@ internal fun BroadbandServiceForm(
                 VerifiedCustomerBox(verifiedCustomer)
             }
         } else {
-            Text("Quantity: $spectranetQty PIN${if (spectranetQty > 1) "s" else ""}", style = MaterialTheme.typography.labelLarge)
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(1, 2, 5).forEach { q ->
-                    FilterChip(
-                        selected = spectranetQty == q,
-                        onClick = { spectranetQty = q },
-                        label = { Text("$q") }
-                    )
-                }
-            }
+            QuantityStepperSection(
+                label = "Spectranet PIN Quantity",
+                quantity = spectranetQty,
+                presets = listOf(1, 2, 5, 10),
+                onQuantityChange = { spectranetQty = it }
+            )
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-        Text("Available Packages (${activePlans.size})", style = MaterialTheme.typography.labelLarge)
-        Spacer(modifier = Modifier.height(8.dp))
-        if (activePlans.isEmpty()) {
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = {
+                Text(
+                    if (provider == "SMILE") "Search Smile packages (e.g. Unlimited, 10GB, Monthly)"
+                    else "Search Spectranet packages (e.g. Unified, Unlimited)"
+                )
+            },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search packages") },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("broadband_search_input")
+        )
+
+        if (categoryCounts.size > 1) {
+            Spacer(modifier = Modifier.height(10.dp))
             Text(
-                text = "No active $provider packages available right now. Tap Refresh at the top to retry.",
+                text = "Package Category",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            PlanCategoryFilterStrip(
+                categories = categoryCounts,
+                totalCount = activePlans.size,
+                selectedCategory = effectiveCategory,
+                onSelectCategory = { selectedCategory = it },
+                testTagPrefix = "broadband"
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = if (effectiveCategory == "All") {
+                "Showing $visibleCount packages grouped by category"
+            } else {
+                "Showing $visibleCount $effectiveCategory packages (lowest to highest)"
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        if (filteredGroupedPlans.isEmpty()) {
+            Text(
+                text = if (activePlans.isEmpty()) "No active $provider packages available right now. Tap Refresh at the top to retry."
+                else "No packages match your filter. Select All or clear search.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                activePlans.forEach { plan ->
-                    CatalogPlanCard(
-                        title = plan.productName,
-                        subtitle = plan.validity.ifBlank { if (provider == "SPECTRANET") "Printable Broadband PIN" else "Direct Smile Top-Up" },
-                        priceKobo = plan.sellingPriceKobo + plan.feeKobo,
-                        selected = selectedPlan?.id == plan.id,
-                        onClick = { selectedPlan = plan }
-                    )
+                filteredGroupedPlans.forEach { (categoryName, categoryPlans) ->
+                    if (effectiveCategory == "All" && filteredGroupedPlans.size > 1) {
+                        PlanCategorySectionHeader(
+                            categoryName = categoryName,
+                            planCount = categoryPlans.size
+                        )
+                    }
+                    categoryPlans.forEach { plan ->
+                        CatalogPlanCard(
+                            title = plan.productName,
+                            subtitle = listOf(
+                                categoryName,
+                                plan.dataVolume,
+                                plan.validity.ifBlank { if (provider == "SPECTRANET") "Printable Broadband PIN" else "Direct Smile Top-Up" }
+                            ).filter { it.isNotBlank() }.distinct().joinToString(" • "),
+                            priceKobo = plan.sellingPriceKobo + plan.feeKobo,
+                            selected = selectedPlan?.id == plan.id,
+                            onClick = { selectedPlan = plan }
+                        )
+                    }
                 }
             }
         }
@@ -828,7 +1252,7 @@ internal fun BettingServiceForm(
                             productCode = selectedProvider.productCode,
                             productTitle = title,
                             recipient = customerId,
-                            amountKobo = amountKobo + feeKobo,
+                            amountKobo = amountKobo,
                             summary = PurchaseSummaryItem(
                                 title = title,
                                 recipient = verifiedCustomer?.customerName?.let { "$customerId ($it)" } ?: customerId,
