@@ -14,7 +14,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: APP_ENVIRONMENT
-        value: SANDBOX
+        value: LIVE
       - key: FIRESTORE_DATABASE_ID
         value: ai-studio-android-msageerp-1cabd974-084b-4311-b76c-3034d7a0e5a6
       - key: FIREBASE_SERVICE_ACCOUNT_JSON

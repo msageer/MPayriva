@@ -23,7 +23,7 @@ android {
     // Public, non-secret Cloud Functions / Cloud Run backend base URL.
     // Set after deploying /backend to Google Cloud / Firebase Functions.
     buildConfigField("String", "BACKEND_BASE_URL", "\"\"")
-    buildConfigField("String", "APP_ENVIRONMENT", "\"SANDBOX\"")
+    buildConfigField("String", "APP_ENVIRONMENT", "\"LIVE\"")
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,
