@@ -1,0 +1,244 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Individual or Business customer account for M-SAGEER DIGITAL TECHNOLOGIES LTD. Financial balance and virtual account fields are backend-authoritative.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID matching document ID" },
+        "accountType": { "type": "string", "enum": ["INDIVIDUAL", "BUSINESS"] },
+        "fullName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "phoneNumber": { "type": "string" },
+        "businessName": { "type": "string" },
+        "contactPerson": { "type": "string" },
+        "businessAddress": { "type": "string" },
+        "businessCategory": { "type": "string" },
+        "accountStatus": { "type": "string", "enum": ["ACTIVE", "RESTRICTED", "SUSPENDED"] },
+        "restrictionReason": { "type": "string" },
+        "pinSet": { "type": "boolean" },
+        "biometricEnabled": { "type": "boolean" },
+        "kycVerified": { "type": "boolean" },
+        "walletBalanceKobo": { "type": "integer", "description": "Authoritative NGN wallet balance in kobo (backend-managed only)" },
+        "virtualBankName": { "type": "string" },
+        "virtualAccountNumber": { "type": "string" },
+        "virtualAccountName": { "type": "string" },
+        "fcmToken": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Must be submitted via FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Must be submitted via FieldValue.serverTimestamp()" }
+      },
+      "required": ["userId", "accountType", "fullName", "email", "phoneNumber", "accountStatus", "pinSet", "biometricEnabled", "kycVerified", "walletBalanceKobo", "createdAt", "updatedAt"]
+    },
+    "SecurityPin": {
+      "title": "SecurityPin",
+      "description": "Salted SHA-256 hash of the customer's 4-digit transaction PIN.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "pinHash": { "type": "string" },
+        "pinSalt": { "type": "string" },
+        "failedAttempts": { "type": "integer" },
+        "lockedUntilEpochMs": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "pinHash", "pinSalt", "failedAttempts", "lockedUntilEpochMs", "createdAt", "updatedAt"]
+    },
+    "TransactionRecord": {
+      "title": "TransactionRecord",
+      "description": "Backend-authoritative financial and utility service transaction.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "reference": { "type": "string" },
+        "idempotencyKey": { "type": "string" },
+        "type": { "type": "string", "enum": ["WALLET_FUNDING", "AIRTIME", "DATA", "ELECTRICITY", "CABLE_TV", "RECHARGE_CARD", "WAEC_PIN", "JAMB_PIN", "REFUND"] },
+        "status": { "type": "string", "enum": ["INITIATED", "PROCESSING", "PENDING", "SUCCESSFUL", "FAILED", "REVERSED"] },
+        "provider": { "type": "string", "enum": ["CLUBKONNECT", "FLUTTERWAVE", "INTERNAL"] },
+        "providerCode": { "type": "string" },
+        "providerOrderId": { "type": "string" },
+        "recipient": { "type": "string" },
+        "recipientName": { "type": "string" },
+        "productName": { "type": "string" },
+        "productCode": { "type": "string" },
+        "providerCostKobo": { "type": "integer" },
+        "sellingPriceKobo": { "type": "integer" },
+        "feeKobo": { "type": "integer" },
+        "grossMarginKobo": { "type": "integer" },
+        "totalAmountKobo": { "type": "integer" },
+        "tokenOrPin": { "type": "string" },
+        "serialNumber": { "type": "string" },
+        "failureReason": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "reference", "idempotencyKey", "type", "status", "provider", "providerCode", "recipient", "productName", "providerCostKobo", "sellingPriceKobo", "feeKobo", "grossMarginKobo", "totalAmountKobo", "createdAt", "updatedAt"]
+    },
+    "LedgerEntry": {
+      "title": "LedgerEntry",
+      "description": "Immutable double-entry financial ledger line item managed strictly by backend.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "transactionId": { "type": "string" },
+        "reference": { "type": "string" },
+        "entryType": { "type": "string", "enum": ["CREDIT", "DEBIT", "RESERVE", "RELEASE", "REVERSAL"] },
+        "accountCode": { "type": "string", "enum": ["CUSTOMER_WALLET", "FLUTTERWAVE_SETTLEMENT", "CLUBKONNECT_PAYABLE", "PLATFORM_REVENUE", "FEE_REVENUE"] },
+        "amountKobo": { "type": "integer" },
+        "balanceBeforeKobo": { "type": "integer" },
+        "balanceAfterKobo": { "type": "integer" },
+        "narration": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "transactionId", "reference", "entryType", "accountCode", "amountKobo", "balanceBeforeKobo", "balanceAfterKobo", "narration", "createdAt"]
+    },
+    "ServiceCatalogItem": {
+      "title": "ServiceCatalogItem",
+      "description": "Admin-configurable utility service product, provider cost, selling price, fee, discount, and commission.",
+      "type": "object",
+      "properties": {
+        "serviceType": { "type": "string", "enum": ["AIRTIME", "DATA", "ELECTRICITY", "CABLE_TV", "RECHARGE_CARD", "WAEC_PIN", "JAMB_PIN"] },
+        "providerCode": { "type": "string" },
+        "providerName": { "type": "string" },
+        "productCode": { "type": "string" },
+        "productName": { "type": "string" },
+        "validity": { "type": "string" },
+        "dataVolume": { "type": "string" },
+        "providerCostKobo": { "type": "integer" },
+        "sellingPriceKobo": { "type": "integer" },
+        "feeKobo": { "type": "integer" },
+        "discountPercent": { "type": "number" },
+        "commissionPercent": { "type": "number" },
+        "enabled": { "type": "boolean" },
+        "updatedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["serviceType", "providerCode", "providerName", "productCode", "productName", "providerCostKobo", "sellingPriceKobo", "feeKobo", "discountPercent", "commissionPercent", "enabled", "updatedBy", "createdAt", "updatedAt"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Customer support request or transaction dispute.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "category": { "type": "string", "enum": ["FAILED_TRANSACTION", "WALLET_FUNDING", "UTILITY_TOKEN", "ACCOUNT", "OTHER"] },
+        "subject": { "type": "string" },
+        "message": { "type": "string" },
+        "transactionReference": { "type": "string" },
+        "status": { "type": "string", "enum": ["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"] },
+        "adminResponse": { "type": "string" },
+        "adminNotes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "userEmail", "userName", "category", "subject", "message", "status", "createdAt", "updatedAt"]
+    },
+    "CustomerNotification": {
+      "title": "CustomerNotification",
+      "description": "In-app notification generated by backend transaction events or admin announcements.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "type": { "type": "string", "enum": ["WALLET_FUNDING", "PURCHASE_SUCCESS", "PURCHASE_FAILED", "TRANSACTION_PENDING", "REFUND", "ANNOUNCEMENT"] },
+        "reference": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "body", "type", "read", "createdAt", "updatedAt"]
+    },
+    "ProviderLog": {
+      "title": "ProviderLog",
+      "description": "Admin-only audit log for ClubKonnect, Flutterwave, and system reconciliation events.",
+      "type": "object",
+      "properties": {
+        "provider": { "type": "string", "enum": ["CLUBKONNECT", "FLUTTERWAVE", "SYSTEM"] },
+        "action": { "type": "string" },
+        "reference": { "type": "string" },
+        "statusCode": { "type": "string" },
+        "outcome": { "type": "string", "enum": ["SUCCESS", "PENDING", "ERROR"] },
+        "message": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["provider", "action", "reference", "statusCode", "outcome", "message", "createdAt"]
+    },
+    "PlatformConfig": {
+      "title": "PlatformConfig",
+      "description": "Non-secret platform branding and provider mode configuration.",
+      "type": "object",
+      "properties": {
+        "brandName": { "type": "string" },
+        "companyLegalName": { "type": "string" },
+        "supportEmail": { "type": "string" },
+        "supportPhone": { "type": "string" },
+        "clubKonnectMode": { "type": "string", "enum": ["SANDBOX", "LIVE"] },
+        "flutterwaveMode": { "type": "string", "enum": ["SANDBOX", "LIVE"] },
+        "virtualAccountsEnabled": { "type": "boolean" },
+        "cardFundingEnabled": { "type": "boolean" },
+        "maintenanceMode": { "type": "boolean" },
+        "updatedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["brandName", "companyLegalName", "supportEmail", "supportPhone", "clubKonnectMode", "flutterwaveMode", "virtualAccountsEnabled", "cardFundingEnabled", "maintenanceMode", "updatedBy", "createdAt", "updatedAt"]
+    },
+    "AdminMember": {
+      "title": "AdminMember",
+      "description": "Role-based access control document granting platform administration rights.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "OPERATIONS", "SUPPORT"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "role", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Customer profile and authoritative read-only wallet snapshot."
+    },
+    "/users/{userId}/security/{docId}": {
+      "schema": { "$ref": "#/entities/SecurityPin" },
+      "description": "Salted transaction PIN hash and lockout counters."
+    },
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/TransactionRecord" },
+      "description": "Central financial and utility transactions written strictly by backend."
+    },
+    "/ledgerEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/LedgerEntry" },
+      "description": "Immutable double-entry financial ledger entries written strictly by backend."
+    },
+    "/serviceCatalog/{serviceId}": {
+      "schema": { "$ref": "#/entities/ServiceCatalogItem" },
+      "description": "Central pricing and utility product catalog managed by administrators."
+    },
+    "/supportTickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "Customer support complaints and transaction dispute tickets."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/CustomerNotification" },
+      "description": "Customer notifications generated by backend events and admin announcements."
+    },
+    "/providerLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ProviderLog" },
+      "description": "Admin-only provider API and reconciliation logs."
+    },
+    "/platformConfig/{configId}": {
+      "schema": { "$ref": "#/entities/PlatformConfig" },
+      "description": "Non-secret platform branding and provider status configuration."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminMember" },
+      "description": "Server-managed administrator role records."
+    }
+  }
+}

@@ -1,0 +1,409 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL PRIMITIVE HELPERS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isOptString(data, field, maxLen) {
+      return !(field in data) || data[field] == null || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (
+          'email' in request.auth.token &&
+          'email_verified' in request.auth.token &&
+          request.auth.token.email == 'msagirgroup@gmail.com' &&
+          request.auth.token.email_verified == true
+        )
+      );
+    }
+
+    // --- ENTITY VALIDATION BLUEPRINTS ---
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.accountType in ['INDIVIDUAL', 'BUSINESS'] &&
+             data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100 &&
+             data.email is string && data.email.size() >= 5 && data.email.size() <= 160 &&
+             data.phoneNumber is string && data.phoneNumber.size() >= 10 && data.phoneNumber.size() <= 20 &&
+             isOptString(data, 'businessName', 120) &&
+             isOptString(data, 'contactPerson', 100) &&
+             isOptString(data, 'businessAddress', 250) &&
+             isOptString(data, 'businessCategory', 80) &&
+             data.accountStatus in ['ACTIVE', 'RESTRICTED', 'SUSPENDED'] &&
+             isOptString(data, 'restrictionReason', 300) &&
+             data.pinSet is bool &&
+             data.biometricEnabled is bool &&
+             data.kycVerified is bool &&
+             data.walletBalanceKobo is int && data.walletBalanceKobo >= 0 &&
+             isOptString(data, 'virtualBankName', 80) &&
+             isOptString(data, 'virtualAccountNumber', 20) &&
+             isOptString(data, 'virtualAccountName', 120) &&
+             isOptString(data, 'fcmToken', 300) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidSecurityPin(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.pinHash is string && data.pinHash.size() == 64 &&
+             data.pinSalt is string && data.pinSalt.size() >= 16 && data.pinSalt.size() <= 64 &&
+             data.failedAttempts is int && data.failedAttempts >= 0 && data.failedAttempts <= 10 &&
+             data.lockedUntilEpochMs is int && data.lockedUntilEpochMs >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidServiceCatalog(data) {
+      return data.serviceType in ['AIRTIME', 'DATA', 'ELECTRICITY', 'CABLE_TV', 'RECHARGE_CARD', 'WAEC_PIN', 'JAMB_PIN'] &&
+             data.providerCode is string && data.providerCode.size() >= 1 && data.providerCode.size() <= 60 &&
+             data.providerName is string && data.providerName.size() >= 2 && data.providerName.size() <= 80 &&
+             data.productCode is string && data.productCode.size() >= 1 && data.productCode.size() <= 80 &&
+             data.productName is string && data.productName.size() >= 2 && data.productName.size() <= 120 &&
+             isOptString(data, 'validity', 60) &&
+             isOptString(data, 'dataVolume', 40) &&
+             data.providerCostKobo is int && data.providerCostKobo >= 0 &&
+             data.sellingPriceKobo is int && data.sellingPriceKobo >= 0 &&
+             data.feeKobo is int && data.feeKobo >= 0 &&
+             (data.discountPercent is int || data.discountPercent is float) && data.discountPercent >= 0 && data.discountPercent <= 50 &&
+             (data.commissionPercent is int || data.commissionPercent is float) && data.commissionPercent >= 0 && data.commissionPercent <= 50 &&
+             data.enabled is bool &&
+             data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidSupportTicket(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.userEmail is string && data.userEmail.size() >= 5 && data.userEmail.size() <= 160 &&
+             data.userName is string && data.userName.size() >= 2 && data.userName.size() <= 100 &&
+             data.category in ['FAILED_TRANSACTION', 'WALLET_FUNDING', 'UTILITY_TOKEN', 'ACCOUNT', 'OTHER'] &&
+             data.subject is string && data.subject.size() >= 3 && data.subject.size() <= 120 &&
+             data.message is string && data.message.size() >= 10 && data.message.size() <= 1500 &&
+             isOptString(data, 'transactionReference', 100) &&
+             data.status in ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'] &&
+             isOptString(data, 'adminResponse', 1500) &&
+             isOptString(data, 'adminNotes', 1500) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidNotification(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.title is string && data.title.size() >= 2 && data.title.size() <= 120 &&
+             data.body is string && data.body.size() >= 2 && data.body.size() <= 600 &&
+             data.type in ['WALLET_FUNDING', 'PURCHASE_SUCCESS', 'PURCHASE_FAILED', 'TRANSACTION_PENDING', 'REFUND', 'ANNOUNCEMENT'] &&
+             isOptString(data, 'reference', 100) &&
+             data.read is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidOptionalBackendUrl(data) {
+      return !('backendBaseUrl' in data) ||
+             data.backendBaseUrl == null ||
+             data.backendBaseUrl == '' ||
+             (data.backendBaseUrl is string &&
+              data.backendBaseUrl.size() <= 240 &&
+              (data.backendBaseUrl.matches('^https://[a-zA-Z0-9._\\-:/]+$') ||
+               data.backendBaseUrl.matches('^http://10\\.0\\.2\\.2(:[0-9]+)?$')));
+    }
+
+    function isValidPlatformConfig(data) {
+      return data.brandName is string && data.brandName.size() >= 2 && data.brandName.size() <= 60 &&
+             data.companyLegalName is string && data.companyLegalName.size() >= 2 && data.companyLegalName.size() <= 120 &&
+             data.supportEmail is string && data.supportEmail.size() >= 5 && data.supportEmail.size() <= 120 &&
+             data.supportPhone is string && data.supportPhone.size() >= 7 && data.supportPhone.size() <= 30 &&
+             isValidOptionalBackendUrl(data) &&
+             data.clubKonnectMode in ['SANDBOX', 'LIVE'] &&
+             data.flutterwaveMode in ['SANDBOX', 'LIVE'] &&
+             data.virtualAccountsEnabled is bool &&
+             data.cardFundingEnabled is bool &&
+             data.maintenanceMode is bool &&
+             data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    // --- 1. USERS COLLECTION (Strict PII Isolation & Read-Only Wallet Balance) ---
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+
+      // Registration: owner creates own profile with zero wallet balance and ACTIVE status.
+      // Clients cannot forge virtual bank accounts, KYC status, or wallet balances.
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isOwner(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().walletBalanceKobo == 0 &&
+                       incoming().accountStatus == 'ACTIVE' &&
+                       incoming().kycVerified == false &&
+                       !('virtualBankName' in incoming()) &&
+                       !('virtualAccountNumber' in incoming()) &&
+                       !('virtualAccountName' in incoming()) &&
+                       !('restrictionReason' in incoming()) &&
+                       incoming().keys().hasAll([
+                         'userId', 'accountType', 'fullName', 'email', 'phoneNumber',
+                         'accountStatus', 'pinSet', 'biometricEnabled', 'kycVerified',
+                         'walletBalanceKobo', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'accountType', 'fullName', 'email', 'phoneNumber',
+                         'businessName', 'contactPerson', 'businessAddress', 'businessCategory',
+                         'accountStatus', 'pinSet', 'biometricEnabled', 'kycVerified',
+                         'walletBalanceKobo', 'fcmToken', 'createdAt', 'updatedAt'
+                       ]);
+
+      // Action-Based Update: customer can ONLY update safe profile fields; NEVER walletBalanceKobo or accountStatus.
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().walletBalanceKobo == existing().walletBalanceKobo && (
+                         // Action 1: Customer profile & security preference update
+                         (
+                           isOwner(userId) &&
+                           incoming().accountStatus == existing().accountStatus &&
+                           incoming().kycVerified == existing().kycVerified &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'fullName', 'phoneNumber', 'businessName', 'contactPerson',
+                             'businessAddress', 'businessCategory', 'pinSet',
+                             'biometricEnabled', 'fcmToken', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 2: Platform Admin compliance/account status update
+                         (
+                           isAdmin() &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'accountStatus', 'restrictionReason', 'kycVerified', 'updatedAt'
+                           ])
+                         )
+                       );
+
+      allow delete: if false;
+
+      // Subcollection: Transaction PIN hash (strictly owner-only)
+      match /security/{docId} {
+        allow get: if isOwner(userId) && docId == 'pin';
+        allow list: if false;
+
+        allow create: if isOwner(userId) &&
+                         docId == 'pin' &&
+                         isValidSecurityPin(incoming()) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().failedAttempts == 0 &&
+                         incoming().lockedUntilEpochMs == 0 &&
+                         incoming().keys().hasAll(['userId', 'pinHash', 'pinSalt', 'failedAttempts', 'lockedUntilEpochMs', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'pinHash', 'pinSalt', 'failedAttempts', 'lockedUntilEpochMs', 'createdAt', 'updatedAt']);
+
+        allow update: if isOwner(userId) &&
+                         docId == 'pin' &&
+                         isValidSecurityPin(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'pinHash', 'pinSalt', 'failedAttempts', 'lockedUntilEpochMs', 'updatedAt'
+                         ]);
+
+        allow delete: if false;
+      }
+    }
+
+    // --- 2. TRANSACTIONS (Strictly Backend-Authoritative Writes) ---
+    match /transactions/{transactionId} {
+      allow get: if isSignedIn() && isValidId(transactionId) && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create, update, delete: if false;
+    }
+
+    // --- 3. DOUBLE-ENTRY LEDGER (Immutable & Strictly Backend-Authoritative) ---
+    match /ledgerEntries/{entryId} {
+      allow get: if isSignedIn() && isValidId(entryId) && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create, update, delete: if false;
+    }
+
+    // --- 4. CENTRAL PRICING & SERVICE CATALOG ---
+    match /serviceCatalog/{serviceId} {
+      allow get: if isSignedIn() && isValidId(serviceId) && (existing().enabled == true || isAdmin());
+      allow list: if isSignedIn() && (existing().enabled == true || isAdmin());
+
+      allow create: if isAdmin() &&
+                       isValidId(serviceId) &&
+                       isValidServiceCatalog(incoming()) &&
+                       incoming().updatedBy == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'serviceType', 'providerCode', 'providerName', 'productCode', 'productName',
+                         'providerCostKobo', 'sellingPriceKobo', 'feeKobo', 'discountPercent',
+                         'commissionPercent', 'enabled', 'updatedBy', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'serviceType', 'providerCode', 'providerName', 'productCode', 'productName',
+                         'validity', 'dataVolume', 'providerCostKobo', 'sellingPriceKobo', 'feeKobo',
+                         'discountPercent', 'commissionPercent', 'enabled', 'updatedBy', 'createdAt', 'updatedAt'
+                       ]);
+
+      allow update: if isAdmin() &&
+                       isValidId(serviceId) &&
+                       isValidServiceCatalog(incoming()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedBy == request.auth.uid &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'providerName', 'productName', 'validity', 'dataVolume',
+                         'providerCostKobo', 'sellingPriceKobo', 'feeKobo',
+                         'discountPercent', 'commissionPercent', 'enabled', 'updatedBy', 'updatedAt'
+                       ]);
+
+      allow delete: if false;
+    }
+
+    // --- 5. CUSTOMER SUPPORT TICKETS ---
+    match /supportTickets/{ticketId} {
+      allow get: if isSignedIn() && isValidId(ticketId) && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn() &&
+                       isValidId(ticketId) &&
+                       isValidSupportTicket(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().status == 'OPEN' &&
+                       !('adminResponse' in incoming()) &&
+                       !('adminNotes' in incoming()) &&
+                       incoming().keys().hasAll([
+                         'userId', 'userEmail', 'userName', 'category', 'subject',
+                         'message', 'status', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'userEmail', 'userName', 'category', 'subject',
+                         'message', 'transactionReference', 'status', 'createdAt', 'updatedAt'
+                       ]);
+
+      allow update: if isSignedIn() &&
+                       isValidId(ticketId) &&
+                       isValidSupportTicket(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt && (
+                         // Action 1: Admin responds or updates ticket status
+                         (
+                           isAdmin() &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'status', 'adminResponse', 'adminNotes', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 2: Owner closes their own non-closed ticket
+                         (
+                           existing().userId == request.auth.uid &&
+                           existing().status != 'CLOSED' &&
+                           incoming().status == 'CLOSED' &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+                         )
+                       );
+
+      allow delete: if false;
+    }
+
+    // --- 6. CUSTOMER NOTIFICATIONS ---
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn() && isValidId(notificationId) && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+
+      // Admin can send announcements; backend Admin SDK generates transaction notifications
+      allow create: if isAdmin() &&
+                       isValidId(notificationId) &&
+                       isValidNotification(incoming()) &&
+                       incoming().keys().hasAll(['userId', 'title', 'body', 'type', 'read', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'title', 'body', 'type', 'reference', 'read', 'createdAt', 'updatedAt']);
+
+      // Customer can mark their own notification as read
+      allow update: if isSignedIn() &&
+                       isValidId(notificationId) &&
+                       isValidNotification(incoming()) &&
+                       existing().userId == request.auth.uid &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt']);
+
+      allow delete: if false;
+    }
+
+    // --- 7. PROVIDER API LOGS (Admin Read-Only, Backend Write-Only) ---
+    match /providerLogs/{logId} {
+      allow get: if isAdmin() && isValidId(logId);
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // --- 8. PLATFORM CONFIGURATION (Non-Secret) ---
+    match /platformConfig/{configId} {
+      allow get: if isSignedIn() && isValidId(configId) && (configId == 'branding' || isAdmin());
+      allow list: if isAdmin();
+
+      allow create: if isAdmin() &&
+                       isValidId(configId) &&
+                       isValidPlatformConfig(incoming()) &&
+                       incoming().updatedBy == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'brandName', 'companyLegalName', 'supportEmail', 'supportPhone',
+                         'clubKonnectMode', 'flutterwaveMode', 'virtualAccountsEnabled',
+                         'cardFundingEnabled', 'maintenanceMode', 'updatedBy', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'brandName', 'companyLegalName', 'supportEmail', 'supportPhone', 'backendBaseUrl',
+                         'clubKonnectMode', 'flutterwaveMode', 'virtualAccountsEnabled',
+                         'cardFundingEnabled', 'maintenanceMode', 'updatedBy', 'createdAt', 'updatedAt'
+                       ]);
+
+      allow update: if isAdmin() &&
+                       isValidId(configId) &&
+                       isValidPlatformConfig(incoming()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedBy == request.auth.uid &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'brandName', 'companyLegalName', 'supportEmail', 'supportPhone', 'backendBaseUrl',
+                         'clubKonnectMode', 'flutterwaveMode', 'virtualAccountsEnabled',
+                         'cardFundingEnabled', 'maintenanceMode', 'updatedBy', 'updatedAt'
+                       ]);
+
+      allow delete: if false;
+    }
+
+    // --- 9. ADMINS ALLOWLIST (Read Self Only; Server/Console Managed) ---
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && request.auth.uid == adminUid;
+      allow list, create, update, delete: if false;
+    }
+  }
+}

@@ -1,0 +1,33 @@
+# Render Blueprint for M-Sageer Pay Trusted Backend
+# Deploy free on https://render.com -> New -> Blueprint -> Connect your GitHub repo.
+services:
+  - type: web
+    name: msageer-pay-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_ENVIRONMENT
+        value: SANDBOX
+      - key: FIRESTORE_DATABASE_ID
+        value: ai-studio-android-msageerp-1cabd974-084b-4311-b76c-3034d7a0e5a6
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: CLUBKONNECT_USER_ID
+        sync: false
+      - key: CLUBKONNECT_API_KEY
+        sync: false
+      - key: FLUTTERWAVE_SECRET_KEY
+        sync: false
+      - key: FLUTTERWAVE_WEBHOOK_HASH
+        sync: false
+      - key: BACKEND_CALLBACK_BASE_URL
+        sync: false
+      - key: FLUTTERWAVE_REDIRECT_URL
+        sync: false

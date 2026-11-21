@@ -1,0 +1,24 @@
+{
+  "name": "msageer-pay-backend",
+  "version": "1.0.0",
+  "description": "Trusted fintech backend for M-SAGEER DIGITAL TECHNOLOGIES LTD (ClubKonnect, Flutterwave v3, Double-Entry Ledger, FCM)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "test": "node --experimental-strip-types --test test/pricingEngine.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "firebase-admin": "^13.0.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
