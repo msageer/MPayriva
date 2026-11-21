@@ -180,7 +180,7 @@ class FintechViewModel(
             result.onSuccess { live ->
                 _liveCatalogState.value = UiState.Success(live)
             }.onFailure { err ->
-                _liveCatalogState.value = UiState.Error(err.message ?: "Unable to fetch live ClubKonnect plans")
+                _liveCatalogState.value = UiState.Error(err.message ?: "Unable to load live service plans right now.")
             }
         }
     }

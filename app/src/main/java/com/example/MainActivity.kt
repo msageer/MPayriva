@@ -481,6 +481,7 @@ private fun AuthenticatedFintechShell(
                                                 MainTab.SERVICES -> UtilityServicesScreen(
                                                     initialService = selectedService,
                                                     profile = profile,
+                                                    platformConfig = platformConfig,
                                                     catalog = catalog,
                                                     liveCatalogState = liveCatalogState,
                                                     verifiedCustomer = verifiedCustomer,

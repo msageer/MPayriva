@@ -172,8 +172,10 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 app.get("/payment-complete", (_req: Request, res: Response) => {
-  res.type("text/plain").send(
-    "Payment submitted. Return to the M-Sageer Pay app and tap 'Verify Payment Status' or wait for automatic webhook settlement."
+  res.type("text/html").send(
+    "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Payment Complete</title></head>" +
+      "<body style='font-family:sans-serif;text-align:center;padding:48px 20px;background:#F4F7FA;color:#0A1D37'>" +
+      "<h2>Payment Received</h2><p>Verifying your payment now. You can close this window to return to M-Sageer Pay.</p></body></html>"
   );
 });
 
@@ -516,7 +518,18 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
           item.providerCode === "ALL_DISCOS"
       );
 
-    // Check live ClubKonnect catalog & stock availability (especially for RECHARGE_CARD, DATA_CARD, and live ClubKonnect plans)
+    // Enforce Admin Utility Service Toggles from /platformConfig/branding
+    const brandingSnap = await db.collection("platformConfig").doc("branding").get();
+    const enabledServices = (brandingSnap.data()?.enabledServices || {}) as Record<string, unknown>;
+    if (enabledServices[normalizedService] === false) {
+      res.status(403).json({
+        status: "FAILED",
+        message: "This service is currently paused by the administrator. Please try again later.",
+      });
+      return;
+    }
+
+    // Check live catalog & stock availability
     const liveLookup = await findAuthorizedLiveProduct(
       clubKonnect,
       normalizedService,
@@ -526,7 +539,7 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
     if (!liveLookup.available) {
       res.status(400).json({
         status: "FAILED",
-        message: liveLookup.unavailableReason || `${normalizedService} is currently unavailable on ClubKonnect.`,
+        message: liveLookup.unavailableReason || "This service is currently unavailable. Please try again shortly.",
       });
       return;
     }
@@ -1221,6 +1234,152 @@ app.post("/api/v1/admin/wallet/fund-from-main-balance", requireAuth, requireAdmi
       message: creditRes.alreadyProcessed
         ? "This main-balance transfer was already processed."
         : `Credited ₦${(amountKobo / 100).toFixed(2)} from Flutterwave Main NGN Balance (Available: ₦${flwBal.availableNaira.toFixed(2)}) to your Super Admin wallet.`,
+    });
+  } catch (err) {
+    res.status(400).json({ status: "FAILED", message: (err as Error).message });
+  }
+});
+
+// 8A3. ADMIN: USE CURRENT LIVE CLUBKONNECT BALANCE IN SUPER ADMIN WALLET
+app.post("/api/v1/admin/wallet/fund-from-clubkonnect", requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const uid = req.uid!;
+    const amountKobo = Number(req.body?.amountKobo || 0);
+    const rawIdem = typeof req.body?.idempotencyKey === "string" ? req.body.idempotencyKey.trim() : "";
+
+    if (!Number.isInteger(amountKobo) || amountKobo < 10000 || amountKobo > 1000000000) {
+      res.status(400).json({ status: "FAILED", message: "Amount must be between ₦100.00 and ₦10,000,000.00." });
+      return;
+    }
+
+    const userSnap = await db.collection("users").doc(uid).get();
+    if (!userSnap.exists) {
+      res.status(400).json({
+        status: "FAILED",
+        message: "Super Admin wallet profile not initialized yet. Tap the Storefront icon once to complete your wallet profile.",
+      });
+      return;
+    }
+
+    const ckRes = await clubKonnect.getWalletBalance();
+    const rawBal = String(ckRes.balance ?? ckRes.walletbalance ?? "0").replace(/[^0-9.]/g, "");
+    const ckBalanceNaira = Number(rawBal);
+    const ckBalanceKobo = Number.isFinite(ckBalanceNaira) ? Math.round(ckBalanceNaira * 100) : 0;
+
+    if (ckBalanceKobo < amountKobo) {
+      res.status(400).json({
+        status: "FAILED",
+        message: `Requested ₦${(amountKobo / 100).toFixed(2)} exceeds current live ClubKonnect balance (₦${(ckBalanceKobo / 100).toFixed(2)}).`,
+      });
+      return;
+    }
+
+    const reference = `MSGR-CKBAL-${Date.now()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    const idempotencyKey = sanitizeDocId(
+      rawIdem || `admin_ck_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
+      `admin_ck_${Date.now()}`
+    );
+
+    const creditRes = await atomicCreditWallet({
+      userId: uid,
+      idempotencyKey,
+      reference,
+      amountKobo,
+      feeKobo: 0,
+      providerOrderId: "CLUBKONNECT_LIVE_FLOAT",
+      settlementAccountCode: "CLUBKONNECT_FLOAT_TREASURY",
+      narration: `Super Admin draw from live ClubKonnect Balance (Verified: ₦${(ckBalanceKobo / 100).toFixed(2)})`,
+    });
+
+    await logProviderEvent({
+      provider: "CLUBKONNECT",
+      action: "ADMIN_FUND_FROM_CLUBKONNECT",
+      reference,
+      statusCode: "200",
+      outcome: "SUCCESS",
+      message: `Allocated ₦${(amountKobo / 100).toFixed(2)} from live ClubKonnect balance (₦${(ckBalanceKobo / 100).toFixed(2)}) to Super Admin wallet.`,
+    });
+
+    res.json({
+      status: "SUCCESSFUL",
+      transactionId: reference,
+      reference,
+      message: creditRes.alreadyProcessed
+        ? "This ClubKonnect balance allocation was already processed."
+        : `Credited ₦${(amountKobo / 100).toFixed(2)} from your live ClubKonnect balance (₦${(ckBalanceKobo / 100).toFixed(2)}) to your Super Admin wallet.`,
+    });
+  } catch (err) {
+    res.status(400).json({ status: "FAILED", message: (err as Error).message });
+  }
+});
+
+// 8A4. ADMIN: TRANSFER CLUBKONNECT BALANCE ALLOCATION TO MAIN ACCOUNT TREASURY
+app.post("/api/v1/admin/wallet/transfer-clubkonnect-to-main", requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const uid = req.uid!;
+    const amountKobo = Number(req.body?.amountKobo || 0);
+    const rawIdem = typeof req.body?.idempotencyKey === "string" ? req.body.idempotencyKey.trim() : "";
+
+    if (!Number.isInteger(amountKobo) || amountKobo < 10000 || amountKobo > 1000000000) {
+      res.status(400).json({ status: "FAILED", message: "Transfer amount must be between ₦100.00 and ₦10,000,000.00." });
+      return;
+    }
+
+    const userSnap = await db.collection("users").doc(uid).get();
+    if (!userSnap.exists) {
+      res.status(400).json({
+        status: "FAILED",
+        message: "Super Admin wallet profile not initialized yet. Tap the Storefront icon once to complete your wallet profile.",
+      });
+      return;
+    }
+
+    const ckRes = await clubKonnect.getWalletBalance();
+    const rawBal = String(ckRes.balance ?? ckRes.walletbalance ?? "0").replace(/[^0-9.]/g, "");
+    const ckBalanceNaira = Number(rawBal);
+    const ckBalanceKobo = Number.isFinite(ckBalanceNaira) ? Math.round(ckBalanceNaira * 100) : 0;
+
+    if (ckBalanceKobo < amountKobo) {
+      res.status(400).json({
+        status: "FAILED",
+        message: `Transfer amount ₦${(amountKobo / 100).toFixed(2)} exceeds current live ClubKonnect balance (₦${(ckBalanceKobo / 100).toFixed(2)}).`,
+      });
+      return;
+    }
+
+    const reference = `MSGR-CK2MAIN-${Date.now()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    const idempotencyKey = sanitizeDocId(
+      rawIdem || `admin_ck2main_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
+      `admin_ck2main_${Date.now()}`
+    );
+
+    const creditRes = await atomicCreditWallet({
+      userId: uid,
+      idempotencyKey,
+      reference,
+      amountKobo,
+      feeKobo: 0,
+      providerOrderId: "CK_TO_MAIN_TREASURY",
+      settlementAccountCode: "FLUTTERWAVE_MAIN_TREASURY",
+      narration: `Treasury sweep: ClubKonnect Balance → Main Account (Verified CK Float: ₦${(ckBalanceKobo / 100).toFixed(2)})`,
+    });
+
+    await logProviderEvent({
+      provider: "CLUBKONNECT",
+      action: "TREASURY_TRANSFER_CK_TO_MAIN",
+      reference,
+      statusCode: "200",
+      outcome: "SUCCESS",
+      message: `Recorded audited ClubKonnect → Main Account treasury transfer of ₦${(amountKobo / 100).toFixed(2)} (Ref: ${reference}).`,
+    });
+
+    res.json({
+      status: "SUCCESSFUL",
+      transactionId: reference,
+      reference,
+      message: creditRes.alreadyProcessed
+        ? "This ClubKonnect-to-Main transfer was already recorded."
+        : `Transferred ₦${(amountKobo / 100).toFixed(2)} from ClubKonnect float into your Main Account ledger (Ref: ${reference}). Note: ClubKonnect API does not expose outbound bank payouts, so physical bank cash-out is initiated in your ClubKonnect portal if needed.`,
     });
   } catch (err) {
     res.status(400).json({ status: "FAILED", message: (err as Error).message });

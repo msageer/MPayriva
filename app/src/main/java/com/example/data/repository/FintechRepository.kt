@@ -684,7 +684,8 @@ class FintechRepository(
         flutterwaveMode: String,
         virtualAccountsEnabled: Boolean,
         cardFundingEnabled: Boolean,
-        maintenanceMode: Boolean
+        maintenanceMode: Boolean,
+        enabledServices: Map<String, Boolean>? = null
     ): Result<Unit> {
         val adminUid = requireUserId()
         val docRef = db.collection("platformConfig").document("branding")
@@ -698,7 +699,7 @@ class FintechRepository(
                 }
             }
             val existingSnap = docRef.get().await()
-            val commonFields = mapOf(
+            val commonFields = mutableMapOf<String, Any>(
                 "brandName" to brandName.trim().ifBlank { BrandingConfig.Default.appDisplayName }.take(60),
                 "companyLegalName" to companyLegalName.trim().ifBlank { BrandingConfig.Default.companyLegalName }.take(120),
                 "supportEmail" to supportEmail.trim().ifBlank { BrandingConfig.Default.supportEmail }.take(120),
@@ -712,13 +713,14 @@ class FintechRepository(
                 "updatedBy" to adminUid,
                 "updatedAt" to FieldValue.serverTimestamp()
             )
+            if (enabledServices != null) {
+                commonFields["enabledServices"] = enabledServices
+            }
             if (existingSnap.exists()) {
                 docRef.update(commonFields).await()
             } else {
-                val createFields = commonFields.toMutableMap().apply {
-                    put("createdAt", FieldValue.serverTimestamp())
-                }
-                docRef.set(createFields).await()
+                commonFields["createdAt"] = FieldValue.serverTimestamp()
+                docRef.set(commonFields).await()
             }
             Result.success(Unit)
         } catch (e: CancellationException) {
@@ -728,4 +730,21 @@ class FintechRepository(
             Result.failure(e)
         }
     }
+
+    suspend fun adminSaveServiceToggles(
+        currentConfig: PlatformConfig,
+        enabledServices: Map<String, Boolean>
+    ): Result<Unit> = adminSavePlatformConfig(
+        brandName = currentConfig.brandName,
+        companyLegalName = currentConfig.companyLegalName,
+        supportEmail = currentConfig.supportEmail,
+        supportPhone = currentConfig.supportPhone,
+        backendBaseUrl = currentConfig.backendBaseUrl,
+        clubKonnectMode = currentConfig.clubKonnectMode,
+        flutterwaveMode = currentConfig.flutterwaveMode,
+        virtualAccountsEnabled = currentConfig.virtualAccountsEnabled,
+        cardFundingEnabled = currentConfig.cardFundingEnabled,
+        maintenanceMode = currentConfig.maintenanceMode,
+        enabledServices = enabledServices
+    )
 }

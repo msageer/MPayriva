@@ -83,6 +83,7 @@ import com.example.data.model.TransactionType
 import com.example.data.model.UserProfile
 import com.example.data.remote.CardFundingResponse
 import com.example.ui.components.EmptyStateCard
+import com.example.ui.components.InAppPaymentCheckoutDialog
 import com.example.ui.components.StatusPill
 import com.example.ui.components.TransactionListRow
 import com.example.ui.theme.EmeraldBright
@@ -200,6 +201,7 @@ fun WalletScreen(
                             Spacer(modifier = Modifier.height(12.dp))
 
                             if (!profile.virtualAccountNumber.isNullOrBlank()) {
+                                val cleanAccountNo = profile.virtualAccountNumber.trim()
                                 Surface(
                                     color = MaterialTheme.colorScheme.primaryContainer,
                                     shape = RoundedCornerShape(14.dp),
@@ -210,20 +212,25 @@ fun WalletScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text(profile.virtualBankName ?: "Partner Bank", style = MaterialTheme.typography.labelMedium)
                                             Text(
-                                                text = profile.virtualAccountNumber,
-                                                style = MaterialTheme.typography.titleLarge.copy(fontFamily = JetBrainsMono),
-                                                fontWeight = FontWeight.Bold
+                                                text = profile.virtualBankName?.trim().orEmpty().ifBlank { "Partner Bank" },
+                                                style = MaterialTheme.typography.labelMedium
                                             )
                                             Text(
-                                                text = profile.virtualAccountName ?: profile.displayTitle(),
+                                                text = cleanAccountNo,
+                                                style = MaterialTheme.typography.titleLarge.copy(fontFamily = JetBrainsMono),
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                softWrap = false
+                                            )
+                                            Text(
+                                                text = profile.virtualAccountName?.trim().orEmpty().ifBlank { profile.displayTitle() },
                                                 style = MaterialTheme.typography.bodySmall
                                             )
                                         }
                                         IconButton(onClick = {
-                                            clipboard.setText(AnnotatedString(profile.virtualAccountNumber))
-                                            Toast.makeText(context, "Virtual account copied", Toast.LENGTH_SHORT).show()
+                                            clipboard.setText(AnnotatedString(cleanAccountNo))
+                                            Toast.makeText(context, "Account number copied", Toast.LENGTH_SHORT).show()
                                         }) {
                                             Icon(Icons.Filled.ContentCopy, contentDescription = "Copy account number")
                                         }
@@ -339,46 +346,27 @@ fun WalletScreen(
                                     .height(48.dp)
                                     .testTag("initiate_card_funding_button")
                             ) {
-                                Text("Continue with Flutterwave", fontWeight = FontWeight.Bold)
+                                if (isSubmitting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = PureWhite, strokeWidth = 2.dp)
+                                } else {
+                                    Text("Pay Securely In-App", fontWeight = FontWeight.Bold)
+                                }
                             }
 
-                            if (!lastCardCheckout?.checkoutUrl.isNullOrBlank()) {
+                            if (!lastCardCheckout?.reference.isNullOrBlank()) {
                                 Spacer(modifier = Modifier.height(10.dp))
                                 OutlinedButton(
-                                    onClick = {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(lastCardCheckout!!.checkoutUrl))
-                                        context.startActivity(intent)
-                                    },
+                                    onClick = { onVerifyCardFunding(lastCardCheckout!!.reference!!) },
+                                    enabled = !isSubmitting,
+                                    shape = RoundedCornerShape(14.dp),
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .testTag("open_checkout_page_button")
+                                        .height(46.dp)
+                                        .testTag("verify_card_payment_button")
                                 ) {
-                                    Icon(Icons.Filled.OpenInBrowser, contentDescription = "Open checkout")
+                                    Icon(Icons.Filled.Refresh, contentDescription = "Verify payment", modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Open Secure Payment Page")
-                                }
-                                if (!lastCardCheckout?.reference.isNullOrBlank()) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Button(
-                                        onClick = { onVerifyCardFunding(lastCardCheckout!!.reference!!) },
-                                        enabled = !isSubmitting,
-                                        shape = RoundedCornerShape(14.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(48.dp)
-                                            .testTag("verify_card_payment_button")
-                                    ) {
-                                        Icon(Icons.Filled.Refresh, contentDescription = "Verify payment", modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Verify Payment & Credit Wallet")
-                                    }
-                                    TextButton(
-                                        onClick = onClearCardCheckout,
-                                        modifier = Modifier.align(Alignment.End)
-                                    ) {
-                                        Text("Dismiss Checkout")
-                                    }
+                                    Text("Verify Last Checkout Payment")
                                 }
                             }
                         }
@@ -465,6 +453,24 @@ fun WalletScreen(
                 }
             }
         }
+    }
+
+    // Automatic In-App Payment Gateway Overlay (with guaranteed Cancel & Back controls)
+    val activeCheckoutUrl = lastCardCheckout?.checkoutUrl
+    val activeCheckoutRef = lastCardCheckout?.reference
+    if (!activeCheckoutUrl.isNullOrBlank() && !activeCheckoutRef.isNullOrBlank()) {
+        InAppPaymentCheckoutDialog(
+            checkoutUrl = activeCheckoutUrl,
+            reference = activeCheckoutRef,
+            onCancelAndClose = {
+                onClearCardCheckout()
+                Toast.makeText(context, "Checkout closed", Toast.LENGTH_SHORT).show()
+            },
+            onPaymentCompleted = { ref ->
+                onClearCardCheckout()
+                onVerifyCardFunding(ref)
+            }
+        )
     }
 }
 
@@ -644,7 +650,7 @@ fun TransactionReceiptDialog(
 
                 ReceiptRow("Service", transaction.productName.ifBlank { transaction.resolvedType().label })
                 ReceiptRow("Reference", transaction.reference, mono = true)
-                ReceiptRow("Provider", "${transaction.provider} (${transaction.providerCode})")
+                ReceiptRow("Category", transaction.resolvedType().label)
                 ReceiptRow("Recipient", transaction.recipient)
                 if (!transaction.recipientName.isNullOrBlank()) {
                     ReceiptRow("Account Name", transaction.recipientName)

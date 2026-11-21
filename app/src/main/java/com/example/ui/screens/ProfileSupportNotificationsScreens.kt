@@ -398,7 +398,7 @@ fun SupportScreen(
 
     val faqs = listOf(
         "How long does bank transfer wallet funding take?" to "Dedicated Flutterwave virtual bank transfers credit automatically once the bank settlement webhook is verified by our backend, typically within 1–3 minutes.",
-        "What happens if an electricity or data purchase is Pending?" to "Never retry immediately. Open the transaction receipt and tap 'Verify Status with Provider'. Our backend queries ClubKonnect directly and either delivers your token or automatically reverses confirmed failures.",
+        "What happens if an electricity or data purchase is Pending?" to "Never retry immediately. Open the transaction receipt and tap 'Verify Status with Provider'. Our platform checks the live delivery status automatically and either delivers your token or reverses confirmed failures.",
         "How do Business accounts differ from Individual accounts?" to "Business customers can register with business details and receipts while sharing the same secure wallet infrastructure and pricing policies."
     )
 

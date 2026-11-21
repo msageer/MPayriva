@@ -282,6 +282,18 @@ interface BackendApiService {
         @Body request: AdminMainBalanceFundRequest
     ): Response<PurchaseResponse>
 
+    @POST("api/v1/admin/wallet/fund-from-clubkonnect")
+    suspend fun adminFundFromClubKonnect(
+        @Header("Authorization") bearerToken: String,
+        @Body request: AdminMainBalanceFundRequest
+    ): Response<PurchaseResponse>
+
+    @POST("api/v1/admin/wallet/transfer-clubkonnect-to-main")
+    suspend fun adminTransferClubKonnectToMain(
+        @Header("Authorization") bearerToken: String,
+        @Body request: AdminMainBalanceFundRequest
+    ): Response<PurchaseResponse>
+
     @POST("api/v1/admin/transactions/{reference}/reconcile")
     suspend fun adminReconcileTransaction(
         @Header("Authorization") bearerToken: String,
@@ -407,6 +419,22 @@ class TrustedBackendClient(
     suspend fun adminFundFromMainBalance(amountKobo: Long, idempotencyKey: String): Result<PurchaseResponse> =
         executeCall {
             it.adminFundFromMainBalance(
+                requireBearerToken(),
+                AdminMainBalanceFundRequest(amountKobo, idempotencyKey)
+            )
+        }
+
+    suspend fun adminFundFromClubKonnect(amountKobo: Long, idempotencyKey: String): Result<PurchaseResponse> =
+        executeCall {
+            it.adminFundFromClubKonnect(
+                requireBearerToken(),
+                AdminMainBalanceFundRequest(amountKobo, idempotencyKey)
+            )
+        }
+
+    suspend fun adminTransferClubKonnectToMain(amountKobo: Long, idempotencyKey: String): Result<PurchaseResponse> =
+        executeCall {
+            it.adminTransferClubKonnectToMain(
                 requireBearerToken(),
                 AdminMainBalanceFundRequest(amountKobo, idempotencyKey)
             )

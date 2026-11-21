@@ -277,10 +277,63 @@ class AdminViewModel(
             _isBusy.value = false
             result.onSuccess { resp ->
                 _statusBanner.value = ActionBanner(resp.message)
-                // Refresh live Flutterwave NGN balance readout
                 backendClient.getProviderHealth().onSuccess { _providerHealth.value = it }
             }.onFailure { err ->
                 _statusBanner.value = ActionBanner(err.message ?: "Unable to draw from Flutterwave main balance", isError = true)
+            }
+        }
+    }
+
+    fun fundAdminWalletFromClubKonnect(amountKobo: Long) {
+        if (amountKobo < 10000L) {
+            _statusBanner.value = ActionBanner("Minimum draw from ClubKonnect balance is ₦100.00.", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            val idempotencyKey = "admin_ck_${UUID.randomUUID()}"
+            val result = backendClient.adminFundFromClubKonnect(amountKobo, idempotencyKey)
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _statusBanner.value = ActionBanner(resp.message)
+                backendClient.getProviderHealth().onSuccess { _providerHealth.value = it }
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Unable to load from ClubKonnect balance", isError = true)
+            }
+        }
+    }
+
+    fun transferClubKonnectToMainAccount(amountKobo: Long) {
+        if (amountKobo < 10000L) {
+            _statusBanner.value = ActionBanner("Minimum transfer amount is ₦100.00.", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            val idempotencyKey = "admin_ck2main_${UUID.randomUUID()}"
+            val result = backendClient.adminTransferClubKonnectToMain(amountKobo, idempotencyKey)
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _statusBanner.value = ActionBanner(resp.message)
+                backendClient.getProviderHealth().onSuccess { _providerHealth.value = it }
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Unable to transfer ClubKonnect balance", isError = true)
+            }
+        }
+    }
+
+    fun toggleUtilityService(serviceKeys: List<String>, enabled: Boolean, displayLabel: String) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val current = platformConfig.value
+            val updatedMap = current.enabledServices.toMutableMap()
+            serviceKeys.forEach { key -> updatedMap[key] = enabled }
+            val result = repository.adminSaveServiceToggles(current, updatedMap)
+            _isBusy.value = false
+            result.onSuccess {
+                _statusBanner.value = ActionBanner("$displayLabel ${if (enabled) "enabled" else "disabled"} on storefront.")
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Failed to update service toggle", isError = true)
             }
         }
     }

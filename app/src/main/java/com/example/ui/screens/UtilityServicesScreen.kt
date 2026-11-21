@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.SportsSoccer
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.outlined.Storefront
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
@@ -50,12 +51,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.core.CurrencyFormatter
 import com.example.data.model.NigerianProviders
+import com.example.data.model.PlatformConfig
 import com.example.data.model.ServiceCatalogItem
 import com.example.data.model.ServiceType
 import com.example.data.model.UserProfile
 import com.example.data.remote.CustomerVerificationResponse
 import com.example.data.remote.LiveCatalogPlanDto
 import com.example.data.remote.LiveStorefrontCatalogResponse
+import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.InlineStatusBanner
 import com.example.ui.components.PurchaseSummaryItem
 import com.example.ui.components.TransactionPinConfirmationDialog
@@ -82,6 +85,7 @@ private fun ServiceCatalogItem.toLivePlanDto(): LiveCatalogPlanDto = LiveCatalog
 fun UtilityServicesScreen(
     initialService: ServiceType,
     profile: UserProfile,
+    platformConfig: PlatformConfig,
     catalog: List<ServiceCatalogItem>,
     liveCatalogState: UiState<LiveStorefrontCatalogResponse>,
     verifiedCustomer: CustomerVerificationResponse?,
@@ -106,6 +110,28 @@ fun UtilityServicesScreen(
         onFinished: () -> Unit
     ) -> Unit
 ) {
+    val allServiceTabs = listOf(
+        Triple(ServiceType.AIRTIME, "Airtime", Icons.Filled.PhoneAndroid),
+        Triple(ServiceType.DATA, "Data Plans", Icons.Filled.Wifi),
+        Triple(ServiceType.RECHARGE_CARD, "Recharge PINs", Icons.Filled.ConfirmationNumber),
+        Triple(ServiceType.DATA_CARD, "Data Cards", Icons.Filled.CreditCard),
+        Triple(ServiceType.ELECTRICITY, "Electricity", Icons.Filled.Bolt),
+        Triple(ServiceType.CABLE_TV, "Cable TV", Icons.Filled.Tv),
+        Triple(ServiceType.WAEC_PIN, "WAEC / JAMB", Icons.Filled.School),
+        Triple(ServiceType.SMILE, "Broadband", Icons.Filled.Router),
+        Triple(ServiceType.BETTING, "Betting", Icons.Filled.SportsSoccer)
+    )
+
+    val serviceTabs = remember(platformConfig.enabledServices) {
+        allServiceTabs.filter { (type, _, _) ->
+            when (type) {
+                ServiceType.WAEC_PIN -> platformConfig.isEducationEnabled()
+                ServiceType.SMILE -> platformConfig.isBroadbandEnabled()
+                else -> platformConfig.isServiceEnabled(type)
+            }
+        }
+    }
+
     var selectedTab by remember(initialService) {
         mutableStateOf(
             when (initialService) {
@@ -115,6 +141,13 @@ fun UtilityServicesScreen(
             }
         )
     }
+
+    LaunchedEffect(serviceTabs) {
+        if (serviceTabs.isNotEmpty() && serviceTabs.none { it.first == selectedTab }) {
+            selectedTab = serviceTabs.first().first
+        }
+    }
+
     var pendingDraft by remember { mutableStateOf<PendingPurchaseDraft?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
 
@@ -138,7 +171,11 @@ fun UtilityServicesScreen(
     var smartCardNo by remember { mutableStateOf("") }
     var selectedCablePkg by remember { mutableStateOf<LiveCatalogPlanDto?>(null) }
 
-    var selectedExamType by remember { mutableStateOf(ServiceType.WAEC_PIN) }
+    val waecEnabled = platformConfig.isServiceEnabled(ServiceType.WAEC_PIN)
+    val jambEnabled = platformConfig.isServiceEnabled(ServiceType.JAMB_PIN)
+    var selectedExamType by remember(waecEnabled, jambEnabled) {
+        mutableStateOf(if (waecEnabled) ServiceType.WAEC_PIN else ServiceType.JAMB_PIN)
+    }
     var selectedExamPlan by remember { mutableStateOf<LiveCatalogPlanDto?>(null) }
     var jambProfileId by remember { mutableStateOf("") }
     var examQuantity by remember { mutableIntStateOf(1) }
@@ -147,18 +184,6 @@ fun UtilityServicesScreen(
         validationError = null
         onClearVerification()
     }
-
-    val serviceTabs = listOf(
-        Triple(ServiceType.AIRTIME, "Airtime", Icons.Filled.PhoneAndroid),
-        Triple(ServiceType.DATA, "Data Plans", Icons.Filled.Wifi),
-        Triple(ServiceType.RECHARGE_CARD, "Recharge PINs", Icons.Filled.ConfirmationNumber),
-        Triple(ServiceType.DATA_CARD, "Data Cards", Icons.Filled.CreditCard),
-        Triple(ServiceType.ELECTRICITY, "Electricity", Icons.Filled.Bolt),
-        Triple(ServiceType.CABLE_TV, "Cable TV", Icons.Filled.Tv),
-        Triple(ServiceType.WAEC_PIN, "WAEC / JAMB", Icons.Filled.School),
-        Triple(ServiceType.SMILE, "Broadband", Icons.Filled.Router),
-        Triple(ServiceType.BETTING, "Betting", Icons.Filled.SportsSoccer)
-    )
 
     LazyColumn(
         modifier = Modifier
@@ -170,13 +195,13 @@ fun UtilityServicesScreen(
         item {
             Column {
                 Text(
-                    text = "Storefront & Services",
+                    text = "Utility Services",
                     style = MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.onBackground,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Live ClubKonnect catalog • Instant fulfillment & printable e-PIN PDFs",
+                    text = "Fast digital payments, instant delivery & printable e-PIN receipts",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -224,7 +249,13 @@ fun UtilityServicesScreen(
 
         // Active Service Form
         item {
-            when (selectedTab) {
+            if (serviceTabs.isEmpty()) {
+                EmptyStateCard(
+                    icon = Icons.Outlined.Storefront,
+                    title = "Services Temporarily Unavailable",
+                    subtitle = "All utility services are currently paused by the administrator. Please check back shortly."
+                )
+            } else when (selectedTab) {
                 ServiceType.AIRTIME -> {
                     val liveAirtime = liveCatalog?.airtime?.firstOrNull { it.providerCode == selectedNetwork.clubKonnectCode }
                     val fallbackAirtime = catalog.firstOrNull {
@@ -403,7 +434,7 @@ fun UtilityServicesScreen(
 
                         if (filteredPlans.isEmpty()) {
                             Text(
-                                text = if (isLoadingLive) "Loading live ${selectedNetwork.shortCode} data plans from ClubKonnect…"
+                                text = if (isLoadingLive) "Loading ${selectedNetwork.shortCode} data bundles…"
                                 else "No matching ${selectedNetwork.shortCode} data plans found. Clear search or tap Refresh above.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -713,7 +744,7 @@ fun UtilityServicesScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         if (filteredCablePkgs.isEmpty()) {
                             Text(
-                                text = if (isLoadingLive) "Loading live ${chosenCable.second} packages from ClubKonnect…"
+                                text = if (isLoadingLive) "Loading ${chosenCable.second} bouquets…"
                                 else "No matching ${chosenCable.second} bouquets found.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -788,22 +819,26 @@ fun UtilityServicesScreen(
 
                     ServiceFormCard(title = "Education Services (WAEC & JAMB)") {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            FilterChip(
-                                selected = selectedExamType == ServiceType.WAEC_PIN,
-                                onClick = {
-                                    selectedExamType = ServiceType.WAEC_PIN
-                                    selectedExamPlan = null
-                                },
-                                label = { Text("WAEC Result PIN") }
-                            )
-                            FilterChip(
-                                selected = selectedExamType == ServiceType.JAMB_PIN,
-                                onClick = {
-                                    selectedExamType = ServiceType.JAMB_PIN
-                                    selectedExamPlan = null
-                                },
-                                label = { Text("JAMB e-PIN") }
-                            )
+                            if (waecEnabled) {
+                                FilterChip(
+                                    selected = selectedExamType == ServiceType.WAEC_PIN,
+                                    onClick = {
+                                        selectedExamType = ServiceType.WAEC_PIN
+                                        selectedExamPlan = null
+                                    },
+                                    label = { Text("WAEC Result PIN") }
+                                )
+                            }
+                            if (jambEnabled) {
+                                FilterChip(
+                                    selected = selectedExamType == ServiceType.JAMB_PIN,
+                                    onClick = {
+                                        selectedExamType = ServiceType.JAMB_PIN
+                                        selectedExamPlan = null
+                                    },
+                                    label = { Text("JAMB e-PIN") }
+                                )
+                            }
                         }
                         if (examPlans.isNotEmpty()) {
                             Spacer(modifier = Modifier.height(10.dp))
@@ -902,6 +937,8 @@ fun UtilityServicesScreen(
                     BroadbandServiceForm(
                         profile = profile,
                         broadbandPlans = liveCatalog?.broadband.orEmpty(),
+                        smileEnabled = platformConfig.isServiceEnabled(ServiceType.SMILE),
+                        spectranetEnabled = platformConfig.isServiceEnabled(ServiceType.SPECTRANET),
                         verifiedCustomer = verifiedCustomer,
                         isSubmitting = isSubmitting,
                         onClearVerification = onClearVerification,

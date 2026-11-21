@@ -139,12 +139,18 @@ service cloud.firestore {
                data.backendBaseUrl.matches('^http://10\\.0\\.2\\.2(:[0-9]+)?$')));
     }
 
+    function isValidEnabledServices(data) {
+      return !('enabledServices' in data) ||
+             (data.enabledServices is map && data.enabledServices.size() <= 20);
+    }
+
     function isValidPlatformConfig(data) {
       return data.brandName is string && data.brandName.size() >= 2 && data.brandName.size() <= 60 &&
              data.companyLegalName is string && data.companyLegalName.size() >= 2 && data.companyLegalName.size() <= 120 &&
              data.supportEmail is string && data.supportEmail.size() >= 5 && data.supportEmail.size() <= 120 &&
              data.supportPhone is string && data.supportPhone.size() >= 7 && data.supportPhone.size() <= 30 &&
              isValidOptionalBackendUrl(data) &&
+             isValidEnabledServices(data) &&
              data.clubKonnectMode in ['SANDBOX', 'LIVE'] &&
              data.flutterwaveMode in ['SANDBOX', 'LIVE'] &&
              data.virtualAccountsEnabled is bool &&
@@ -382,7 +388,7 @@ service cloud.firestore {
                        ]) &&
                        incoming().keys().hasOnly([
                          'brandName', 'companyLegalName', 'supportEmail', 'supportPhone', 'backendBaseUrl',
-                         'clubKonnectMode', 'flutterwaveMode', 'virtualAccountsEnabled',
+                         'enabledServices', 'clubKonnectMode', 'flutterwaveMode', 'virtualAccountsEnabled',
                          'cardFundingEnabled', 'maintenanceMode', 'updatedBy', 'createdAt', 'updatedAt'
                        ]);
 
@@ -393,7 +399,7 @@ service cloud.firestore {
                        incoming().updatedBy == request.auth.uid &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
                          'brandName', 'companyLegalName', 'supportEmail', 'supportPhone', 'backendBaseUrl',
-                         'clubKonnectMode', 'flutterwaveMode', 'virtualAccountsEnabled',
+                         'enabledServices', 'clubKonnectMode', 'flutterwaveMode', 'virtualAccountsEnabled',
                          'cardFundingEnabled', 'maintenanceMode', 'updatedBy', 'updatedAt'
                        ]);
 

@@ -297,6 +297,7 @@ data class PlatformConfig(
     val supportEmail: String = "support@msageerdigital.com",
     val supportPhone: String = "+234 800 672 4337",
     val backendBaseUrl: String = "",
+    val enabledServices: Map<String, Boolean> = emptyMap(),
     val clubKonnectMode: String = "LIVE",
     val flutterwaveMode: String = "LIVE",
     val virtualAccountsEnabled: Boolean = true,
@@ -305,4 +306,20 @@ data class PlatformConfig(
     val updatedBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
-)
+) {
+    fun isServiceEnabled(type: ServiceType): Boolean {
+        val explicit = enabledServices[type.name]
+        if (explicit != null) return explicit
+        return when (type) {
+            ServiceType.JAMB_PIN -> enabledServices[ServiceType.JAMB_PIN.name] ?: true
+            ServiceType.SPECTRANET -> enabledServices[ServiceType.SPECTRANET.name] ?: (enabledServices[ServiceType.SMILE.name] ?: true)
+            else -> true
+        }
+    }
+
+    fun isEducationEnabled(): Boolean =
+        isServiceEnabled(ServiceType.WAEC_PIN) || isServiceEnabled(ServiceType.JAMB_PIN)
+
+    fun isBroadbandEnabled(): Boolean =
+        isServiceEnabled(ServiceType.SMILE) || isServiceEnabled(ServiceType.SPECTRANET)
+}

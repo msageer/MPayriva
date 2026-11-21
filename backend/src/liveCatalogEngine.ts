@@ -418,7 +418,7 @@ function parseRechargeCardAvailability(
   if (fetchFailed || !raw || raw.raw) {
     return {
       available: false,
-      statusMessage: "Recharge Card e-PIN feed is currently unavailable from ClubKonnect.",
+      statusMessage: "Recharge Card e-PIN printing is currently unavailable. Please check back shortly.",
       items: [],
     };
   }
@@ -427,7 +427,7 @@ function parseRechargeCardAvailability(
   if (rawText.includes("UNAVAILABLE") || rawText.includes("OUT_OF_STOCK") || rawText.includes("NO_RECORD")) {
     return {
       available: false,
-      statusMessage: "ClubKonnect Recharge Card e-PINs are currently out of stock.",
+      statusMessage: "Recharge Card e-PINs are currently out of stock.",
       items: [],
     };
   }
@@ -520,8 +520,8 @@ function parseRechargeCardAvailability(
   return {
     available: anyAvailable,
     statusMessage: anyAvailable
-      ? `Recharge Card e-PIN printing is available (${items.filter((i) => i.available).length} denominations active on ClubKonnect).`
-      : "Recharge Card e-PIN stock is currently unavailable on ClubKonnect.",
+      ? `Recharge Card e-PIN printing is available (${items.filter((i) => i.available).length} denominations ready).`
+      : "Recharge Card e-PIN stock is currently unavailable.",
     items,
   };
 }
@@ -533,7 +533,7 @@ function parseDataCardAvailability(
   if (fetchFailed || !raw || raw.raw) {
     return {
       available: false,
-      statusMessage: "Data Card e-PIN printing is currently unavailable on your ClubKonnect account.",
+      statusMessage: "Data Card e-PIN printing is currently unavailable.",
       items: [],
     };
   }
@@ -546,7 +546,7 @@ function parseDataCardAvailability(
   ) {
     return {
       available: false,
-      statusMessage: "Data Card e-PIN stock is currently unavailable on ClubKonnect.",
+      statusMessage: "Data Card e-PIN stock is currently unavailable.",
       items: [],
     };
   }
@@ -557,8 +557,8 @@ function parseDataCardAvailability(
     available: availableItems.length > 0,
     statusMessage:
       availableItems.length > 0
-        ? `Data Card e-PIN printing is available (${availableItems.length} printable data card plans active).`
-        : "Data Card e-PIN plans are currently unavailable on ClubKonnect.",
+        ? `Data Card e-PIN printing is available (${availableItems.length} printable data card plans ready).`
+        : "Data Card e-PIN plans are currently unavailable.",
     items: availableItems,
   };
 }
@@ -644,8 +644,8 @@ export async function getLiveStorefrontCatalog(
       cableTv: [],
       waec: [],
       jamb: [],
-      rechargeCards: { available: false, statusMessage: "ClubKonnect credentials not configured.", items: [] },
-      dataCards: { available: false, statusMessage: "ClubKonnect credentials not configured.", items: [] },
+      rechargeCards: { available: false, statusMessage: "Recharge Card service is currently unavailable.", items: [] },
+      dataCards: { available: false, statusMessage: "Data Card service is currently unavailable.", items: [] },
       broadband: [],
       betting: [],
     };
@@ -803,7 +803,7 @@ export async function findAuthorizedLiveProduct(
       return {
         pricingDoc: null,
         available: false,
-        unavailableReason: "Selected recharge card denomination is currently unavailable on ClubKonnect.",
+        unavailableReason: "Selected recharge card denomination is currently out of stock.",
       };
     }
     return { pricingDoc: found, available: true };
@@ -824,7 +824,7 @@ export async function findAuthorizedLiveProduct(
       return {
         pricingDoc: null,
         available: false,
-        unavailableReason: "Selected data card plan is currently unavailable on ClubKonnect.",
+        unavailableReason: "Selected data card plan is currently out of stock.",
       };
     }
     return { pricingDoc: found, available: true };

@@ -90,7 +90,7 @@ internal fun LiveCatalogStatusBanner(
     when (liveCatalogState) {
         UiState.Loading -> {
             Surface(
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -105,7 +105,7 @@ internal fun LiveCatalogStatusBanner(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Fetching live ClubKonnect services & e-PIN stock…",
+                        text = "Updating live service rates & availability…",
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Medium
                     )
@@ -114,53 +114,37 @@ internal fun LiveCatalogStatusBanner(
         }
 
         is UiState.Success -> {
-            val data = liveCatalogState.data
+            // Subtle, useful white-label refresh bar — never discloses internal API providers
             Surface(
-                color = if (data.clubKonnectConnected) StatusSuccessBg else StatusPendingBg,
+                color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(
-                    1.dp,
-                    if (data.clubKonnectConnected) StatusSuccess.copy(alpha = 0.25f) else StatusPending.copy(alpha = 0.3f)
-                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                    modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = if (data.clubKonnectConnected) Icons.Filled.CloudDone else Icons.Filled.Warning,
-                        contentDescription = "Live catalog status",
-                        tint = if (data.clubKonnectConnected) StatusSuccess else StatusPending,
+                        imageVector = Icons.Filled.CloudDone,
+                        contentDescription = "Rates updated",
+                        tint = StatusSuccess,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (data.clubKonnectConnected) {
-                                "ClubKonnect Live • ${data.totalPlans} plans active"
-                            } else {
-                                "ClubKonnect Fallback Mode • ${data.totalPlans} plans"
-                            },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (data.clubKonnectConnected) StatusSuccess else StatusPending,
-                            fontWeight = FontWeight.Bold
-                        )
-                        val rcTag = if (data.rechargeCards.available) "Recharge PINs: Available" else "Recharge PINs: Unavailable"
-                        val dcTag = if (data.dataCards.available) "Data Cards: Available" else "Data Cards: Unavailable"
-                        Text(
-                            text = "$rcTag • $dcTag",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(
+                        text = "Instant delivery • Verified live tariff rates",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
                     IconButton(
                         onClick = onRefresh,
                         modifier = Modifier.testTag("refresh_live_catalog_button")
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Refresh,
-                            contentDescription = "Refresh live ClubKonnect plans",
+                            contentDescription = "Refresh service rates",
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
@@ -181,13 +165,13 @@ internal fun LiveCatalogStatusBanner(
                 ) {
                     Icon(
                         imageVector = Icons.Filled.CloudOff,
-                        contentDescription = "Catalog offline",
+                        contentDescription = "Rates offline",
                         tint = StatusFailed,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = liveCatalogState.message,
+                        text = "Live rates temporarily unavailable. Tap Retry to refresh.",
                         style = MaterialTheme.typography.bodySmall,
                         color = StatusFailed,
                         modifier = Modifier.weight(1f)
@@ -301,8 +285,8 @@ internal fun RechargeCardEpinForm(
 ) {
     val isAvailable = group?.available == true
     val statusMsg = group?.statusMessage?.takeIf { it.isNotBlank() }
-        ?: if (isLoadingLive) "Checking live ClubKonnect e-PIN inventory…"
-        else "Live ClubKonnect recharge card inventory has not loaded yet. Tap Refresh to check."
+        ?: if (isLoadingLive) "Checking live e-PIN stock…"
+        else "Tap Refresh to check current recharge card e-PIN availability."
 
     val liveItems = group?.items.orEmpty()
     val availableNetworks = remember(liveItems) {
@@ -335,7 +319,7 @@ internal fun RechargeCardEpinForm(
 
     ServiceFormCard(title = "Recharge Card Printing (e-PIN)") {
         ServiceAvailabilityBanner(
-            title = "ClubKonnect e-PINs",
+            title = "Recharge e-PIN Stock",
             isLoading = isLoadingLive,
             available = isAvailable,
             statusMessage = statusMsg,
@@ -427,7 +411,7 @@ internal fun RechargeCardEpinForm(
             Icon(Icons.Filled.Print, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = if (isAvailable) "Purchase & Generate Printable PDF" else "Currently Unavailable on ClubKonnect",
+                text = if (isAvailable) "Purchase & Generate Printable PDF" else "Currently Out of Stock",
                 fontWeight = FontWeight.Bold
             )
         }
@@ -444,8 +428,8 @@ internal fun DataCardEpinForm(
 ) {
     val isAvailable = group?.available == true
     val statusMsg = group?.statusMessage?.takeIf { it.isNotBlank() }
-        ?: if (isLoadingLive) "Checking live ClubKonnect printable Data Card plans…"
-        else "Live ClubKonnect Data Card availability has not loaded yet. Tap Refresh to check."
+        ?: if (isLoadingLive) "Checking live printable Data Card stock…"
+        else "Tap Refresh to check current printable Data Card availability."
 
     val liveItems = group?.items.orEmpty()
     val availableNetworks = remember(liveItems) {
@@ -468,7 +452,7 @@ internal fun DataCardEpinForm(
 
     ServiceFormCard(title = "Data Card Printing (e-PIN)") {
         ServiceAvailabilityBanner(
-            title = "ClubKonnect Data Cards",
+            title = "Data Card Stock",
             isLoading = isLoadingLive,
             available = isAvailable,
             statusMessage = statusMsg,
@@ -569,7 +553,7 @@ internal fun DataCardEpinForm(
             ) {
                 Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Re-Check Data Card Stock on ClubKonnect")
+                Text("Check Data Card Availability Again")
             }
         }
     }
@@ -579,6 +563,8 @@ internal fun DataCardEpinForm(
 internal fun BroadbandServiceForm(
     profile: UserProfile,
     broadbandPlans: List<LiveCatalogPlanDto>,
+    smileEnabled: Boolean = true,
+    spectranetEnabled: Boolean = true,
     verifiedCustomer: CustomerVerificationResponse?,
     isSubmitting: Boolean,
     onClearVerification: () -> Unit,
@@ -586,7 +572,9 @@ internal fun BroadbandServiceForm(
     onValidationError: (String) -> Unit,
     onCreateDraft: (PendingPurchaseDraft) -> Unit
 ) {
-    var provider by remember { mutableStateOf("SMILE") }
+    var provider by remember(smileEnabled, spectranetEnabled) {
+        mutableStateOf(if (smileEnabled) "SMILE" else "SPECTRANET")
+    }
     var smileAccount by remember { mutableStateOf("") }
     var spectranetQty by remember { mutableIntStateOf(1) }
 
@@ -595,24 +583,28 @@ internal fun BroadbandServiceForm(
     }
     var selectedPlan by remember(activePlans) { mutableStateOf(activePlans.firstOrNull()) }
 
-    ServiceFormCard(title = "Broadband Internet (Smile & Spectranet)") {
+    ServiceFormCard(title = "Broadband Internet") {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FilterChip(
-                selected = provider == "SMILE",
-                onClick = {
-                    provider = "SMILE"
-                    onClearVerification()
-                },
-                label = { Text("Smile 4G Direct") }
-            )
-            FilterChip(
-                selected = provider == "SPECTRANET",
-                onClick = {
-                    provider = "SPECTRANET"
-                    onClearVerification()
-                },
-                label = { Text("Spectranet e-PIN") }
-            )
+            if (smileEnabled) {
+                FilterChip(
+                    selected = provider == "SMILE",
+                    onClick = {
+                        provider = "SMILE"
+                        onClearVerification()
+                    },
+                    label = { Text("Smile 4G Direct") }
+                )
+            }
+            if (spectranetEnabled) {
+                FilterChip(
+                    selected = provider == "SPECTRANET",
+                    onClick = {
+                        provider = "SPECTRANET"
+                        onClearVerification()
+                    },
+                    label = { Text("Spectranet e-PIN") }
+                )
+            }
         }
         Spacer(modifier = Modifier.height(10.dp))
 
@@ -662,11 +654,11 @@ internal fun BroadbandServiceForm(
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-        Text("Live ClubKonnect Packages (${activePlans.size})", style = MaterialTheme.typography.labelLarge)
+        Text("Available Packages (${activePlans.size})", style = MaterialTheme.typography.labelLarge)
         Spacer(modifier = Modifier.height(8.dp))
         if (activePlans.isEmpty()) {
             Text(
-                text = "No active $provider packages returned by ClubKonnect right now. Tap Refresh at the top to retry.",
+                text = "No active $provider packages available right now. Tap Refresh at the top to retry.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

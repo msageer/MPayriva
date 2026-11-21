@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -65,6 +67,7 @@ import com.example.core.CurrencyFormatter
 import com.example.data.model.AccountStatus
 import com.example.data.model.AccountType
 import com.example.data.model.ServiceCatalogItem
+import com.example.data.model.ServiceType
 import com.example.data.model.SupportTicket
 import com.example.data.model.TicketStatus
 import com.example.data.model.TransactionStatus
@@ -295,11 +298,83 @@ fun AdminDashboardScreen(
                 }
 
                 2 -> {
-                    // CENTRAL PRICING & SERVICE CATALOG
+                    // CENTRAL PRICING, SERVICE TOGGLES & CATALOG
+                    val toggleableServices = listOf(
+                        Triple("Airtime Top-Up", listOf(ServiceType.AIRTIME.name), platformConfig.isServiceEnabled(ServiceType.AIRTIME)),
+                        Triple("Mobile Data Bundles", listOf(ServiceType.DATA.name), platformConfig.isServiceEnabled(ServiceType.DATA)),
+                        Triple("Recharge Card Printing (e-PIN)", listOf(ServiceType.RECHARGE_CARD.name), platformConfig.isServiceEnabled(ServiceType.RECHARGE_CARD)),
+                        Triple("Data Card Printing (e-PIN)", listOf(ServiceType.DATA_CARD.name), platformConfig.isServiceEnabled(ServiceType.DATA_CARD)),
+                        Triple("Electricity Bills", listOf(ServiceType.ELECTRICITY.name), platformConfig.isServiceEnabled(ServiceType.ELECTRICITY)),
+                        Triple("Cable TV Subscriptions", listOf(ServiceType.CABLE_TV.name), platformConfig.isServiceEnabled(ServiceType.CABLE_TV)),
+                        Triple("WAEC Result PIN", listOf(ServiceType.WAEC_PIN.name), platformConfig.isServiceEnabled(ServiceType.WAEC_PIN)),
+                        Triple("JAMB e-PIN", listOf(ServiceType.JAMB_PIN.name), platformConfig.isServiceEnabled(ServiceType.JAMB_PIN)),
+                        Triple("Broadband (Smile & Spectranet)", listOf(ServiceType.SMILE.name, ServiceType.SPECTRANET.name), platformConfig.isBroadbandEnabled()),
+                        Triple("Betting Wallet Funding", listOf(ServiceType.BETTING.name), platformConfig.isServiceEnabled(ServiceType.BETTING))
+                    )
+
                     LazyColumn(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Tune,
+                                            contentDescription = "Service toggles",
+                                            tint = MaterialTheme.colorScheme.secondary
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Utility Service Controls (ON / OFF)",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Text(
+                                        text = "Instantly show or hide any utility service on the customer storefront and block disabled purchases server-side.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    toggleableServices.forEach { (label, keys, isOn) ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                            Switch(
+                                                checked = isOn,
+                                                enabled = !isBusy,
+                                                onCheckedChange = { checked ->
+                                                    adminViewModel.toggleUtilityService(
+                                                        serviceKeys = keys,
+                                                        enabled = checked,
+                                                        displayLabel = label
+                                                    )
+                                                },
+                                                modifier = Modifier.testTag("toggle_service_${keys.first().lowercase()}")
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         item {
                             Button(
                                 onClick = { adminViewModel.seedDefaultServiceCatalog() },
@@ -629,6 +704,108 @@ fun AdminDashboardScreen(
                                             .testTag("admin_fund_from_main_button")
                                     ) {
                                         Text("Wire From Main Account to Admin Wallet", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2C. Super Admin: Use Live ClubKonnect Balance & Transfer to Main Account
+                        item {
+                            var ckAmountNaira by remember { mutableStateOf("1000") }
+                            val rawCkBal = providerHealth?.clubKonnectBalanceNaira
+                            val parsedCkNaira = rawCkBal?.replace(Regex("[^0-9.]"), "")?.toDoubleOrNull()
+
+                            Card(
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            Icons.Filled.SwapHoriz,
+                                            contentDescription = "ClubKonnect balance",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            "ClubKonnect Balance & Main Account Transfer",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Text(
+                                        text = "Use your live ClubKonnect wallet balance directly in your Super Admin wallet for transactions, or record an audited treasury transfer into your Main Account ledger.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    if (!rawCkBal.isNullOrBlank()) {
+                                        Text(
+                                            text = "Live ClubKonnect Balance: ₦$rawCkBal",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
+                                            color = StatusSuccess,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    OutlinedTextField(
+                                        value = ckAmountNaira,
+                                        onValueChange = { ckAmountNaira = it.filter { c -> c.isDigit() || c == '.' } },
+                                        label = { Text("ClubKonnect Amount (₦)") },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("admin_ck_amount_input")
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        listOf("500", "1000", "2000").forEach { preset ->
+                                            FilterChip(
+                                                selected = ckAmountNaira == preset,
+                                                onClick = { ckAmountNaira = preset },
+                                                label = { Text("₦$preset") }
+                                            )
+                                        }
+                                        if (parsedCkNaira != null && parsedCkNaira >= 100.0) {
+                                            val fullStr = String.format("%.2f", parsedCkNaira)
+                                            FilterChip(
+                                                selected = ckAmountNaira == fullStr,
+                                                onClick = { ckAmountNaira = fullStr },
+                                                label = { Text("Use Full") }
+                                            )
+                                        }
+                                    }
+                                    Button(
+                                        onClick = {
+                                            val kobo = CurrencyFormatter.nairaToKobo(ckAmountNaira) ?: 0L
+                                            adminViewModel.fundAdminWalletFromClubKonnect(kobo)
+                                        },
+                                        enabled = !isBusy,
+                                        shape = RoundedCornerShape(14.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .testTag("admin_use_ck_balance_button")
+                                    ) {
+                                        Text("Load ClubKonnect Balance to Admin Wallet", fontWeight = FontWeight.Bold)
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            val kobo = CurrencyFormatter.nairaToKobo(ckAmountNaira) ?: 0L
+                                            adminViewModel.transferClubKonnectToMainAccount(kobo)
+                                        },
+                                        enabled = !isBusy,
+                                        shape = RoundedCornerShape(14.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .testTag("admin_transfer_ck_to_main_button")
+                                    ) {
+                                        Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Transfer ClubKonnect Balance to Main Account", fontWeight = FontWeight.SemiBold)
                                     }
                                 }
                             }
