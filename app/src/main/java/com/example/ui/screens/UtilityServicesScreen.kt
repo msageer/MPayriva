@@ -1,11 +1,8 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,7 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,23 +18,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ConfirmationNumber
+import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SportsSoccer
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,7 +43,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -59,24 +54,28 @@ import com.example.data.model.ServiceCatalogItem
 import com.example.data.model.ServiceType
 import com.example.data.model.UserProfile
 import com.example.data.remote.CustomerVerificationResponse
+import com.example.data.remote.LiveCatalogPlanDto
+import com.example.data.remote.LiveStorefrontCatalogResponse
 import com.example.ui.components.InlineStatusBanner
 import com.example.ui.components.PurchaseSummaryItem
 import com.example.ui.components.TransactionPinConfirmationDialog
-import com.example.ui.theme.JetBrainsMono
-import com.example.ui.theme.StatusSuccess
-import com.example.ui.theme.StatusSuccessBg
-import java.util.UUID
+import com.example.viewmodel.UiState
 
-private data class PendingPurchaseDraft(
-    val serviceType: String,
-    val providerCode: String,
-    val productCode: String,
-    val recipient: String,
-    val amountKobo: Long,
-    val meterType: String? = null,
-    val quantity: Int = 1,
-    val summary: PurchaseSummaryItem,
-    val idempotencyKey: String = "tx_${UUID.randomUUID()}"
+private fun ServiceCatalogItem.toLivePlanDto(): LiveCatalogPlanDto = LiveCatalogPlanDto(
+    id = id.ifBlank { "${serviceType}_${providerCode}_${productCode}" },
+    serviceType = serviceType,
+    providerCode = providerCode,
+    providerName = providerName,
+    productCode = productCode,
+    productName = productName,
+    validity = validity.orEmpty(),
+    dataVolume = dataVolume.orEmpty(),
+    providerCostKobo = providerCostKobo,
+    sellingPriceKobo = sellingPriceKobo,
+    feeKobo = feeKobo,
+    discountPercent = discountPercent,
+    commissionPercent = commissionPercent,
+    available = enabled
 )
 
 @Composable
@@ -84,15 +83,20 @@ fun UtilityServicesScreen(
     initialService: ServiceType,
     profile: UserProfile,
     catalog: List<ServiceCatalogItem>,
+    liveCatalogState: UiState<LiveStorefrontCatalogResponse>,
     verifiedCustomer: CustomerVerificationResponse?,
     isSubmitting: Boolean,
+    onRefreshLiveCatalog: () -> Unit,
     onClearVerification: () -> Unit,
     onVerifyMeter: (electricCompany: String, meterNo: String, meterType: String) -> Unit,
     onVerifySmartCard: (cableTv: String, smartCardNo: String) -> Unit,
+    onVerifyBetting: (bettingCompany: String, customerId: String) -> Unit,
+    onVerifySmile: (mobileNumber: String) -> Unit,
     onAuthorizePurchase: (
         serviceType: String,
         providerCode: String,
         productCode: String,
+        productTitle: String,
         recipient: String,
         amountKobo: Long,
         meterType: String?,
@@ -102,31 +106,42 @@ fun UtilityServicesScreen(
         onFinished: () -> Unit
     ) -> Unit
 ) {
-    var selectedTab by remember(initialService) { mutableStateOf(initialService) }
+    var selectedTab by remember(initialService) {
+        mutableStateOf(
+            when (initialService) {
+                ServiceType.JAMB_PIN -> ServiceType.WAEC_PIN
+                ServiceType.SPECTRANET -> ServiceType.SMILE
+                else -> initialService
+            }
+        )
+    }
     var pendingDraft by remember { mutableStateOf<PendingPurchaseDraft?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
 
-    // Form states
+    val liveCatalog = (liveCatalogState as? UiState.Success)?.data
+    val isLoadingLive = liveCatalogState is UiState.Loading
+
+    // Shared form states
     var selectedNetwork by remember { mutableStateOf(NigerianProviders.telecomNetworks.first()) }
     var phoneInput by remember { mutableStateOf(CurrencyFormatter.toLocalElevenDigitPhone(profile.phoneNumber)) }
     var amountNairaInput by remember { mutableStateOf("500") }
-    var selectedDataPlan by remember { mutableStateOf<ServiceCatalogItem?>(null) }
+    var dataSearchQuery by remember { mutableStateOf("") }
+    var selectedDataPlan by remember { mutableStateOf<LiveCatalogPlanDto?>(null) }
 
-    var selectedDisco by remember { mutableStateOf(NigerianProviders.electricityDiscos.first()) }
+    var selectedDiscoCode by remember { mutableStateOf(NigerianProviders.electricityDiscos.first().clubKonnectCode) }
     var meterType by remember { mutableStateOf("prepaid") }
     var meterNumber by remember { mutableStateOf("") }
     var powerAmountNaira by remember { mutableStateOf("5000") }
 
-    var selectedCable by remember { mutableStateOf(NigerianProviders.cableProviders.first()) }
+    var selectedCableCode by remember { mutableStateOf(NigerianProviders.cableProviders.first().clubKonnectCode) }
+    var cableSearchQuery by remember { mutableStateOf("") }
     var smartCardNo by remember { mutableStateOf("") }
-    var selectedCablePkg by remember { mutableStateOf<ServiceCatalogItem?>(null) }
+    var selectedCablePkg by remember { mutableStateOf<LiveCatalogPlanDto?>(null) }
 
     var selectedExamType by remember { mutableStateOf(ServiceType.WAEC_PIN) }
+    var selectedExamPlan by remember { mutableStateOf<LiveCatalogPlanDto?>(null) }
     var jambProfileId by remember { mutableStateOf("") }
     var examQuantity by remember { mutableIntStateOf(1) }
-
-    var rechargeDenomNaira by remember { mutableStateOf(100L) }
-    var rechargeQty by remember { mutableIntStateOf(5) }
 
     LaunchedEffect(selectedTab) {
         validationError = null
@@ -134,12 +149,15 @@ fun UtilityServicesScreen(
     }
 
     val serviceTabs = listOf(
-        ServiceType.AIRTIME to Icons.Filled.PhoneAndroid,
-        ServiceType.DATA to Icons.Filled.Wifi,
-        ServiceType.ELECTRICITY to Icons.Filled.Bolt,
-        ServiceType.CABLE_TV to Icons.Filled.Tv,
-        ServiceType.RECHARGE_CARD to Icons.Filled.ConfirmationNumber,
-        ServiceType.WAEC_PIN to Icons.Filled.School
+        Triple(ServiceType.AIRTIME, "Airtime", Icons.Filled.PhoneAndroid),
+        Triple(ServiceType.DATA, "Data Plans", Icons.Filled.Wifi),
+        Triple(ServiceType.RECHARGE_CARD, "Recharge PINs", Icons.Filled.ConfirmationNumber),
+        Triple(ServiceType.DATA_CARD, "Data Cards", Icons.Filled.CreditCard),
+        Triple(ServiceType.ELECTRICITY, "Electricity", Icons.Filled.Bolt),
+        Triple(ServiceType.CABLE_TV, "Cable TV", Icons.Filled.Tv),
+        Triple(ServiceType.WAEC_PIN, "WAEC / JAMB", Icons.Filled.School),
+        Triple(ServiceType.SMILE, "Broadband", Icons.Filled.Router),
+        Triple(ServiceType.BETTING, "Betting", Icons.Filled.SportsSoccer)
     )
 
     LazyColumn(
@@ -152,17 +170,24 @@ fun UtilityServicesScreen(
         item {
             Column {
                 Text(
-                    text = "Utility Services",
+                    text = "Storefront & Services",
                     style = MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.onBackground,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Powered by ClubKonnect trusted backend • Live catalog pricing",
+                    text = "Live ClubKonnect catalog • Instant fulfillment & printable e-PIN PDFs",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+
+        item {
+            LiveCatalogStatusBanner(
+                liveCatalogState = liveCatalogState,
+                onRefresh = onRefreshLiveCatalog
+            )
         }
 
         // Category Selector Strip
@@ -173,10 +198,9 @@ fun UtilityServicesScreen(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                serviceTabs.forEach { (type, icon) ->
-                    val label = if (type == ServiceType.WAEC_PIN) "WAEC / JAMB" else type.label
+                serviceTabs.forEach { (type, label, icon) ->
                     FilterChip(
-                        selected = selectedTab == type || (type == ServiceType.WAEC_PIN && selectedTab == ServiceType.JAMB_PIN),
+                        selected = selectedTab == type,
                         onClick = { selectedTab = type },
                         label = { Text(label) },
                         leadingIcon = {
@@ -202,11 +226,12 @@ fun UtilityServicesScreen(
         item {
             when (selectedTab) {
                 ServiceType.AIRTIME -> {
-                    val airtimeCatalog = catalog.firstOrNull {
+                    val liveAirtime = liveCatalog?.airtime?.firstOrNull { it.providerCode == selectedNetwork.clubKonnectCode }
+                    val fallbackAirtime = catalog.firstOrNull {
                         it.resolvedServiceType() == ServiceType.AIRTIME && it.providerCode == selectedNetwork.clubKonnectCode
                     }
-                    val discountPct = airtimeCatalog?.discountPercent ?: 0.0
-                    val feeKobo = airtimeCatalog?.feeKobo ?: 0L
+                    val discountPct = liveAirtime?.discountPercent ?: fallbackAirtime?.discountPercent ?: 0.0
+                    val feeKobo = liveAirtime?.feeKobo ?: fallbackAirtime?.feeKobo ?: 0L
                     val faceKobo = CurrencyFormatter.nairaToKobo(amountNairaInput) ?: 0L
                     val sellingKobo = Math.round(faceKobo * (1.0 - discountPct / 100.0))
 
@@ -252,7 +277,9 @@ fun UtilityServicesScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             listOf("100", "200", "500", "1000", "2000").forEach { preset ->
@@ -265,7 +292,7 @@ fun UtilityServicesScreen(
                         }
                         Spacer(modifier = Modifier.height(12.dp))
                         PricePreviewBar(
-                            label = if (discountPct > 0) "Payable (${discountPct}% discount)" else "Payable Total",
+                            label = if (discountPct > 0) "Payable (${String.format("%.1f", discountPct)}% discount)" else "Payable Total",
                             amountKobo = sellingKobo + feeKobo
                         )
                         Spacer(modifier = Modifier.height(14.dp))
@@ -277,14 +304,16 @@ fun UtilityServicesScreen(
                                 } else if (faceKobo < 5000L) {
                                     validationError = "Minimum airtime recharge is ₦50.00."
                                 } else {
+                                    val title = "${selectedNetwork.shortCode} Airtime (${CurrencyFormatter.formatKobo(faceKobo)})"
                                     pendingDraft = PendingPurchaseDraft(
                                         serviceType = ServiceType.AIRTIME.name,
                                         providerCode = selectedNetwork.clubKonnectCode,
                                         productCode = "airtime",
+                                        productTitle = title,
                                         recipient = CurrencyFormatter.toLocalElevenDigitPhone(phoneInput),
                                         amountKobo = sellingKobo + feeKobo,
                                         summary = PurchaseSummaryItem(
-                                            title = "${selectedNetwork.shortCode} Airtime (${CurrencyFormatter.formatKobo(faceKobo)})",
+                                            title = title,
                                             recipient = CurrencyFormatter.toLocalElevenDigitPhone(phoneInput),
                                             providerName = selectedNetwork.name,
                                             sellingPriceKobo = sellingKobo,
@@ -307,10 +336,23 @@ fun UtilityServicesScreen(
                 }
 
                 ServiceType.DATA -> {
-                    val dataPlans = catalog.filter {
+                    val liveDataPlans = liveCatalog?.data.orEmpty()
+                        .filter { it.providerCode == selectedNetwork.clubKonnectCode }
+                    val fallbackDataPlans = catalog.filter {
                         it.resolvedServiceType() == ServiceType.DATA && it.providerCode == selectedNetwork.clubKonnectCode
+                    }.map { it.toLivePlanDto() }
+                    val allNetworkPlans = liveDataPlans.ifEmpty { fallbackDataPlans }
+                    val filteredPlans = remember(allNetworkPlans, dataSearchQuery) {
+                        val q = dataSearchQuery.trim()
+                        if (q.isEmpty()) allNetworkPlans
+                        else allNetworkPlans.filter {
+                            it.productName.contains(q, ignoreCase = true) ||
+                                it.dataVolume.contains(q, ignoreCase = true) ||
+                                it.validity.contains(q, ignoreCase = true)
+                        }
                     }
-                    ServiceFormCard(title = "Mobile Data Bundles") {
+
+                    ServiceFormCard(title = "Mobile Data Bundles (${allNetworkPlans.size} Live Plans)") {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -321,6 +363,7 @@ fun UtilityServicesScreen(
                                     onClick = {
                                         selectedNetwork = net
                                         selectedDataPlan = null
+                                        dataSearchQuery = ""
                                     },
                                     label = { Text(net.shortCode) },
                                     modifier = Modifier.weight(1f)
@@ -337,25 +380,40 @@ fun UtilityServicesScreen(
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier.fillMaxWidth()
                         )
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Text("Available Plans (${selectedNetwork.shortCode})", style = MaterialTheme.typography.labelLarge)
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = dataSearchQuery,
+                            onValueChange = { dataSearchQuery = it },
+                            placeholder = { Text("Search ${selectedNetwork.shortCode} plans (e.g. 1GB, SME, 30 days)") },
+                            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search plans") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("data_plan_search_input")
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Showing ${filteredPlans.size} of ${allNetworkPlans.size} ${selectedNetwork.shortCode} plans",
+                            style = MaterialTheme.typography.labelLarge
+                        )
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        if (dataPlans.isEmpty()) {
+                        if (filteredPlans.isEmpty()) {
                             Text(
-                                text = "No active ${selectedNetwork.shortCode} data plans configured in Firestore yet. Platform Admin can seed or sync plans from the Admin Pricing panel.",
+                                text = if (isLoadingLive) "Loading live ${selectedNetwork.shortCode} data plans from ClubKonnect…"
+                                else "No matching ${selectedNetwork.shortCode} data plans found. Clear search or tap Refresh above.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         } else {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                dataPlans.forEach { plan ->
-                                    val chosen = selectedDataPlan?.id == plan.id
+                                filteredPlans.forEach { plan ->
                                     CatalogPlanCard(
                                         title = plan.productName,
-                                        subtitle = listOfNotNull(plan.dataVolume, plan.validity).joinToString(" • "),
+                                        subtitle = listOf(plan.dataVolume, plan.validity).filter { it.isNotBlank() }.joinToString(" • "),
                                         priceKobo = plan.sellingPriceKobo + plan.feeKobo,
-                                        selected = chosen,
+                                        selected = selectedDataPlan?.id == plan.id,
                                         onClick = { selectedDataPlan = plan }
                                     )
                                 }
@@ -376,6 +434,7 @@ fun UtilityServicesScreen(
                                         serviceType = ServiceType.DATA.name,
                                         providerCode = plan.providerCode,
                                         productCode = plan.productCode,
+                                        productTitle = plan.productName,
                                         recipient = CurrencyFormatter.toLocalElevenDigitPhone(phoneInput),
                                         amountKobo = plan.sellingPriceKobo + plan.feeKobo,
                                         summary = PurchaseSummaryItem(
@@ -402,12 +461,40 @@ fun UtilityServicesScreen(
                     }
                 }
 
+                ServiceType.RECHARGE_CARD -> {
+                    RechargeCardEpinForm(
+                        profile = profile,
+                        isLoadingLive = isLoadingLive,
+                        group = liveCatalog?.rechargeCards,
+                        onRefreshAvailability = onRefreshLiveCatalog,
+                        onCreateDraft = { pendingDraft = it }
+                    )
+                }
+
+                ServiceType.DATA_CARD -> {
+                    DataCardEpinForm(
+                        profile = profile,
+                        isLoadingLive = isLoadingLive,
+                        group = liveCatalog?.dataCards,
+                        onRefreshAvailability = onRefreshLiveCatalog,
+                        onCreateDraft = { pendingDraft = it }
+                    )
+                }
+
                 ServiceType.ELECTRICITY -> {
-                    val elecConfig = catalog.firstOrNull { it.resolvedServiceType() == ServiceType.ELECTRICITY }
-                    val feeKobo = elecConfig?.feeKobo ?: 10000L
+                    val liveDiscos = liveCatalog?.electricity.orEmpty()
+                    val discoList = remember(liveDiscos) {
+                        if (liveDiscos.isNotEmpty()) {
+                            liveDiscos.map { Triple(it.providerCode, it.providerName, it.feeKobo) }
+                        } else {
+                            NigerianProviders.electricityDiscos.map { Triple(it.clubKonnectCode, it.shortName, 10000L) }
+                        }
+                    }
+                    val chosenDisco = discoList.firstOrNull { it.first == selectedDiscoCode } ?: discoList.first()
+                    val feeKobo = chosenDisco.third
                     val powerKobo = CurrencyFormatter.nairaToKobo(powerAmountNaira) ?: 0L
 
-                    ServiceFormCard(title = "Electricity Bill Payment") {
+                    ServiceFormCard(title = "Electricity Bill Payment (${discoList.size} DisCos)") {
                         Text("Distribution Company (DisCo)", style = MaterialTheme.typography.labelLarge)
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(
@@ -416,14 +503,14 @@ fun UtilityServicesScreen(
                                 .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            NigerianProviders.electricityDiscos.forEach { disco ->
+                            discoList.forEach { (code, name, _) ->
                                 FilterChip(
-                                    selected = selectedDisco.clubKonnectCode == disco.clubKonnectCode,
+                                    selected = chosenDisco.first == code,
                                     onClick = {
-                                        selectedDisco = disco
+                                        selectedDiscoCode = code
                                         onClearVerification()
                                     },
-                                    label = { Text(disco.shortName) }
+                                    label = { Text(name) }
                                 )
                             }
                         }
@@ -457,7 +544,7 @@ fun UtilityServicesScreen(
                                     validationError = "Enter a valid meter number to verify."
                                 } else {
                                     validationError = null
-                                    onVerifyMeter(selectedDisco.clubKonnectCode, meterNumber, meterType)
+                                    onVerifyMeter(chosenDisco.first, meterNumber, meterType)
                                 }
                             },
                             enabled = !isSubmitting,
@@ -469,14 +556,12 @@ fun UtilityServicesScreen(
                         ) {
                             Icon(Icons.Filled.Verified, contentDescription = "Verify Meter", modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Verify Meter with ${selectedDisco.shortName}")
+                            Text("Verify Meter with ${chosenDisco.second}")
                         }
-
                         if (verifiedCustomer?.verified == true) {
                             Spacer(modifier = Modifier.height(8.dp))
                             VerifiedCustomerBox(verifiedCustomer)
                         }
-
                         Spacer(modifier = Modifier.height(10.dp))
                         OutlinedTextField(
                             value = powerAmountNaira,
@@ -501,17 +586,19 @@ fun UtilityServicesScreen(
                                 } else if (powerKobo < 100000L) {
                                     validationError = "Minimum electricity vend is ₦1,000.00."
                                 } else {
+                                    val title = "${chosenDisco.second} ${meterType.replaceFirstChar { it.uppercase() }}"
                                     pendingDraft = PendingPurchaseDraft(
                                         serviceType = ServiceType.ELECTRICITY.name,
-                                        providerCode = selectedDisco.clubKonnectCode,
+                                        providerCode = chosenDisco.first,
                                         productCode = meterType,
+                                        productTitle = title,
                                         recipient = meterNumber,
                                         amountKobo = powerKobo + feeKobo,
                                         meterType = meterType,
                                         summary = PurchaseSummaryItem(
-                                            title = "${selectedDisco.shortName} ${meterType.replaceFirstChar { it.uppercase() }}",
+                                            title = title,
                                             recipient = verifiedCustomer?.customerName?.let { "$meterNumber ($it)" } ?: meterNumber,
-                                            providerName = selectedDisco.fullName,
+                                            providerName = chosenDisco.second,
                                             sellingPriceKobo = powerKobo,
                                             feeKobo = feeKobo,
                                             walletBalanceKobo = profile.walletBalanceKobo
@@ -532,21 +619,47 @@ fun UtilityServicesScreen(
                 }
 
                 ServiceType.CABLE_TV -> {
-                    val cablePackages = catalog.filter {
-                        it.resolvedServiceType() == ServiceType.CABLE_TV &&
-                            it.providerCode.equals(selectedCable.clubKonnectCode, ignoreCase = true)
+                    val liveCableAll = liveCatalog?.cableTv.orEmpty()
+                    val cableProviderList = remember(liveCableAll) {
+                        val dynamic = liveCableAll.map { it.providerCode to it.providerName }.distinctBy { it.first.lowercase() }
+                        if (dynamic.isNotEmpty()) dynamic
+                        else NigerianProviders.cableProviders.map { it.clubKonnectCode to it.name }
                     }
-                    ServiceFormCard(title = "Cable TV Subscriptions") {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            NigerianProviders.cableProviders.forEach { cable ->
+                    val chosenCable = cableProviderList.firstOrNull { it.first.equals(selectedCableCode, ignoreCase = true) }
+                        ?: cableProviderList.first()
+
+                    val providerPackages = liveCableAll.filter {
+                        it.providerCode.equals(chosenCable.first, ignoreCase = true)
+                    }.ifEmpty {
+                        catalog.filter {
+                            it.resolvedServiceType() == ServiceType.CABLE_TV &&
+                                it.providerCode.equals(chosenCable.first, ignoreCase = true)
+                        }.map { it.toLivePlanDto() }
+                    }
+
+                    val filteredCablePkgs = remember(providerPackages, cableSearchQuery) {
+                        val q = cableSearchQuery.trim()
+                        if (q.isEmpty()) providerPackages
+                        else providerPackages.filter { it.productName.contains(q, ignoreCase = true) }
+                    }
+
+                    ServiceFormCard(title = "Cable TV Subscriptions (${providerPackages.size} Bouquets)") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            cableProviderList.forEach { (code, name) ->
                                 FilterChip(
-                                    selected = selectedCable.clubKonnectCode == cable.clubKonnectCode,
+                                    selected = chosenCable.first.equals(code, ignoreCase = true),
                                     onClick = {
-                                        selectedCable = cable
+                                        selectedCableCode = code
                                         selectedCablePkg = null
+                                        cableSearchQuery = ""
                                         onClearVerification()
                                     },
-                                    label = { Text(cable.name) }
+                                    label = { Text(name) }
                                 )
                             }
                         }
@@ -567,7 +680,7 @@ fun UtilityServicesScreen(
                                     validationError = "Enter a valid SmartCard / IUC number."
                                 } else {
                                     validationError = null
-                                    onVerifySmartCard(selectedCable.clubKonnectCode, smartCardNo)
+                                    onVerifySmartCard(chosenCable.first, smartCardNo)
                                 }
                             },
                             enabled = !isSubmitting,
@@ -579,28 +692,36 @@ fun UtilityServicesScreen(
                         ) {
                             Icon(Icons.Filled.Verified, contentDescription = "Verify SmartCard", modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Verify ${selectedCable.name} Account")
+                            Text("Verify ${chosenCable.second} Account")
                         }
                         if (verifiedCustomer?.verified == true) {
                             Spacer(modifier = Modifier.height(8.dp))
                             VerifiedCustomerBox(verifiedCustomer)
                         }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("Select Bouquet", style = MaterialTheme.typography.labelLarge)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        if (cablePackages.isEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = cableSearchQuery,
+                            onValueChange = { cableSearchQuery = it },
+                            placeholder = { Text("Search ${chosenCable.second} bouquets…") },
+                            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search bouquets") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        if (filteredCablePkgs.isEmpty()) {
                             Text(
-                                text = "No active ${selectedCable.name} packages configured yet. Admin can seed or sync bouquets in Admin Pricing.",
+                                text = if (isLoadingLive) "Loading live ${chosenCable.second} packages from ClubKonnect…"
+                                else "No matching ${chosenCable.second} bouquets found.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         } else {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                cablePackages.forEach { pkg ->
+                                filteredCablePkgs.forEach { pkg ->
                                     CatalogPlanCard(
                                         title = pkg.productName,
-                                        subtitle = pkg.validity ?: "Monthly subscription",
+                                        subtitle = pkg.validity.ifBlank { "Monthly subscription" },
                                         priceKobo = pkg.sellingPriceKobo + pkg.feeKobo,
                                         selected = selectedCablePkg?.id == pkg.id,
                                         onClick = { selectedCablePkg = pkg }
@@ -608,7 +729,6 @@ fun UtilityServicesScreen(
                                 }
                             }
                         }
-
                         Spacer(modifier = Modifier.height(14.dp))
                         Button(
                             onClick = {
@@ -621,14 +741,15 @@ fun UtilityServicesScreen(
                                     validationError = null
                                     pendingDraft = PendingPurchaseDraft(
                                         serviceType = ServiceType.CABLE_TV.name,
-                                        providerCode = selectedCable.clubKonnectCode,
+                                        providerCode = chosenCable.first,
                                         productCode = pkg.productCode,
+                                        productTitle = pkg.productName,
                                         recipient = smartCardNo,
                                         amountKobo = pkg.sellingPriceKobo + pkg.feeKobo,
                                         summary = PurchaseSummaryItem(
                                             title = pkg.productName,
                                             recipient = verifiedCustomer?.customerName?.let { "$smartCardNo ($it)" } ?: smartCardNo,
-                                            providerName = selectedCable.name,
+                                            providerName = chosenCable.second,
                                             sellingPriceKobo = pkg.sellingPriceKobo,
                                             feeKobo = pkg.feeKobo,
                                             walletBalanceKobo = profile.walletBalanceKobo
@@ -649,103 +770,54 @@ fun UtilityServicesScreen(
                     }
                 }
 
-                ServiceType.RECHARGE_CARD -> {
-                    val unitKobo = rechargeDenomNaira * 100L
-                    val epinItem = catalog.firstOrNull {
-                        it.resolvedServiceType() == ServiceType.RECHARGE_CARD &&
-                            it.providerCode == selectedNetwork.clubKonnectCode &&
-                            it.productCode == rechargeDenomNaira.toString()
-                    }
-                    val unitSelling = epinItem?.sellingPriceKobo ?: unitKobo
-                    val totalKobo = unitSelling * rechargeQty
-
-                    ServiceFormCard(title = "Recharge Card Printing (e-PIN)") {
-                        Text("Select Network", style = MaterialTheme.typography.labelLarge)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            NigerianProviders.telecomNetworks.forEach { net ->
-                                FilterChip(
-                                    selected = selectedNetwork.clubKonnectCode == net.clubKonnectCode,
-                                    onClick = { selectedNetwork = net },
-                                    label = { Text(net.shortCode) }
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text("Denomination", style = MaterialTheme.typography.labelLarge)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            NigerianProviders.rechargeCardDenominationsNaira.forEach { denom ->
-                                FilterChip(
-                                    selected = rechargeDenomNaira == denom,
-                                    onClick = { rechargeDenomNaira = denom },
-                                    label = { Text("₦$denom") }
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text("Quantity: $rechargeQty PINs", style = MaterialTheme.typography.labelLarge)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(1, 5, 10, 20).forEach { q ->
-                                FilterChip(
-                                    selected = rechargeQty == q,
-                                    onClick = { rechargeQty = q },
-                                    label = { Text("$q") }
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                        PricePreviewBar("Total for $rechargeQty x ₦$rechargeDenomNaira PINs", totalKobo)
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Button(
-                            onClick = {
-                                pendingDraft = PendingPurchaseDraft(
-                                    serviceType = ServiceType.RECHARGE_CARD.name,
-                                    providerCode = selectedNetwork.clubKonnectCode,
-                                    productCode = rechargeDenomNaira.toString(),
-                                    recipient = profile.displayTitle(),
-                                    amountKobo = totalKobo,
-                                    quantity = rechargeQty,
-                                    summary = PurchaseSummaryItem(
-                                        title = "${selectedNetwork.shortCode} ₦$rechargeDenomNaira e-PIN (x$rechargeQty)",
-                                        recipient = profile.displayTitle(),
-                                        providerName = selectedNetwork.name,
-                                        sellingPriceKobo = totalKobo,
-                                        feeKobo = 0L,
-                                        walletBalanceKobo = profile.walletBalanceKobo
-                                    )
-                                )
-                            },
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp)
-                                .testTag("epin_continue_button")
-                        ) {
-                            Text("Generate & Purchase PINs", fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
                 ServiceType.WAEC_PIN, ServiceType.JAMB_PIN -> {
-                    val examCatalog = catalog.firstOrNull { it.resolvedServiceType() == selectedExamType }
-                    val unitPrice = examCatalog?.sellingPriceKobo ?: if (selectedExamType == ServiceType.WAEC_PIN) 370000L else 750000L
-                    val totalKobo = unitPrice * examQuantity
+                    val liveExamList = if (selectedExamType == ServiceType.WAEC_PIN) {
+                        liveCatalog?.waec.orEmpty()
+                    } else {
+                        liveCatalog?.jamb.orEmpty()
+                    }
+                    val fallbackExamList = catalog.filter { it.resolvedServiceType() == selectedExamType }.map { it.toLivePlanDto() }
+                    val examPlans = liveExamList.ifEmpty { fallbackExamList }
+                    val activeExamPlan = selectedExamPlan?.takeIf { p -> examPlans.any { it.id == p.id } } ?: examPlans.firstOrNull()
+                    val unitSelling = activeExamPlan?.sellingPriceKobo
+                        ?: if (selectedExamType == ServiceType.WAEC_PIN) 370000L else 750000L
+                    val unitFee = activeExamPlan?.feeKobo ?: 0L
+                    val totalKobo = (unitSelling + unitFee) * examQuantity
 
                     ServiceFormCard(title = "Education Services (WAEC & JAMB)") {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             FilterChip(
                                 selected = selectedExamType == ServiceType.WAEC_PIN,
-                                onClick = { selectedExamType = ServiceType.WAEC_PIN },
+                                onClick = {
+                                    selectedExamType = ServiceType.WAEC_PIN
+                                    selectedExamPlan = null
+                                },
                                 label = { Text("WAEC Result PIN") }
                             )
                             FilterChip(
                                 selected = selectedExamType == ServiceType.JAMB_PIN,
-                                onClick = { selectedExamType = ServiceType.JAMB_PIN },
+                                onClick = {
+                                    selectedExamType = ServiceType.JAMB_PIN
+                                    selectedExamPlan = null
+                                },
                                 label = { Text("JAMB e-PIN") }
                             )
+                        }
+                        if (examPlans.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("Select Exam Product", style = MaterialTheme.typography.labelLarge)
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                examPlans.forEach { plan ->
+                                    CatalogPlanCard(
+                                        title = plan.productName,
+                                        subtitle = "Printable Exam e-PIN",
+                                        priceKobo = plan.sellingPriceKobo + plan.feeKobo,
+                                        selected = activeExamPlan?.id == plan.id,
+                                        onClick = { selectedExamPlan = plan }
+                                    )
+                                }
+                            }
                         }
                         Spacer(modifier = Modifier.height(12.dp))
                         if (selectedExamType == ServiceType.JAMB_PIN) {
@@ -779,7 +851,7 @@ fun UtilityServicesScreen(
                             }
                         }
                         Spacer(modifier = Modifier.height(12.dp))
-                        PricePreviewBar("Total (${examCatalog?.productName ?: selectedExamType.label})", totalKobo)
+                        PricePreviewBar("Total (${activeExamPlan?.productName ?: selectedExamType.label})", totalKobo)
                         Spacer(modifier = Modifier.height(14.dp))
                         Button(
                             onClick = {
@@ -791,19 +863,22 @@ fun UtilityServicesScreen(
                                 } else {
                                     val rec = if (selectedExamType == ServiceType.JAMB_PIN) jambProfileId.trim()
                                     else CurrencyFormatter.toLocalElevenDigitPhone(phoneInput)
+                                    val title = "${activeExamPlan?.productName ?: selectedExamType.label} (x$examQuantity)"
                                     pendingDraft = PendingPurchaseDraft(
                                         serviceType = selectedExamType.name,
                                         providerCode = if (selectedExamType == ServiceType.WAEC_PIN) "waec" else "jamb",
-                                        productCode = examCatalog?.productCode ?: if (selectedExamType == ServiceType.WAEC_PIN) "waecdirect" else "utme-mock",
+                                        productCode = activeExamPlan?.productCode
+                                            ?: if (selectedExamType == ServiceType.WAEC_PIN) "waecdirect" else "utme-mock",
+                                        productTitle = title,
                                         recipient = rec,
                                         amountKobo = totalKobo,
                                         quantity = examQuantity,
                                         summary = PurchaseSummaryItem(
-                                            title = "${examCatalog?.productName ?: selectedExamType.label} (x$examQuantity)",
+                                            title = title,
                                             recipient = rec,
                                             providerName = if (selectedExamType == ServiceType.WAEC_PIN) "WAEC" else "JAMB",
-                                            sellingPriceKobo = totalKobo,
-                                            feeKobo = 0L,
+                                            sellingPriceKobo = unitSelling * examQuantity,
+                                            feeKobo = unitFee * examQuantity,
                                             walletBalanceKobo = profile.walletBalanceKobo
                                         )
                                     )
@@ -814,28 +889,55 @@ fun UtilityServicesScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(50.dp)
-                                .testTag("education_continue_button")
+                                .testTag("exam_continue_button")
                         ) {
                             Text("Review & Pay", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
+
+                ServiceType.SMILE, ServiceType.SPECTRANET -> {
+                    BroadbandServiceForm(
+                        profile = profile,
+                        broadbandPlans = liveCatalog?.broadband.orEmpty(),
+                        verifiedCustomer = verifiedCustomer,
+                        isSubmitting = isSubmitting,
+                        onClearVerification = onClearVerification,
+                        onVerifySmile = onVerifySmile,
+                        onValidationError = { validationError = it },
+                        onCreateDraft = { pendingDraft = it }
+                    )
+                }
+
+                ServiceType.BETTING -> {
+                    BettingServiceForm(
+                        profile = profile,
+                        bettingProviders = liveCatalog?.betting.orEmpty(),
+                        verifiedCustomer = verifiedCustomer,
+                        isSubmitting = isSubmitting,
+                        onClearVerification = onClearVerification,
+                        onVerifyBetting = onVerifyBetting,
+                        onValidationError = { validationError = it },
+                        onCreateDraft = { pendingDraft = it }
+                    )
+                }
             }
         }
+
+        item { Spacer(modifier = Modifier.height(16.dp)) }
     }
 
-    // 4-Digit Transaction PIN Confirmation Dialog
-    val draft = pendingDraft
-    if (draft != null) {
+    pendingDraft?.let { draft ->
         TransactionPinConfirmationDialog(
             summary = draft.summary,
             isSubmitting = isSubmitting,
-            onDismiss = { pendingDraft = null },
+            onDismiss = { if (!isSubmitting) pendingDraft = null },
             onConfirmPin = { enteredPin ->
                 onAuthorizePurchase(
                     draft.serviceType,
                     draft.providerCode,
                     draft.productCode,
+                    draft.productTitle,
                     draft.recipient,
                     draft.amountKobo,
                     draft.meterType,
@@ -847,129 +949,5 @@ fun UtilityServicesScreen(
                 }
             }
         )
-    }
-}
-
-@Composable
-private fun ServiceFormCard(
-    title: String,
-    content: @Composable () -> Unit
-) {
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(18.dp)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(14.dp))
-            content()
-        }
-    }
-}
-
-@Composable
-private fun PricePreviewBar(label: String, amountKobo: Long) {
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            Text(
-                text = CurrencyFormatter.formatKobo(amountKobo),
-                style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMono),
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-}
-
-@Composable
-private fun CatalogPlanCard(
-    title: String,
-    subtitle: String,
-    priceKobo: Long,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.background,
-        border = BorderStroke(
-            width = if (selected) 2.dp else 1.dp,
-            color = if (selected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outlineVariant
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-    ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(text = title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                if (subtitle.isNotBlank()) {
-                    Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            Text(
-                text = CurrencyFormatter.formatKobo(priceKobo),
-                style = MaterialTheme.typography.titleSmall.copy(fontFamily = JetBrainsMono),
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-}
-
-@Composable
-private fun VerifiedCustomerBox(verified: CustomerVerificationResponse) {
-    Surface(
-        color = StatusSuccessBg,
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, StatusSuccess.copy(alpha = 0.35f)),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Filled.CheckCircle, contentDescription = "Verified", tint = StatusSuccess)
-            Spacer(modifier = Modifier.width(8.dp))
-            Column {
-                Text(
-                    text = verified.customerName ?: "Verified Customer",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = StatusSuccess,
-                    fontWeight = FontWeight.Bold
-                )
-                if (!verified.customerAddress.isNullOrBlank()) {
-                    Text(
-                        text = verified.customerAddress,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = StatusSuccess
-                    )
-                }
-            }
-        }
     }
 }

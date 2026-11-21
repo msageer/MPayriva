@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 class AdminViewModel(
     private val repository: FintechRepository,
@@ -247,6 +248,39 @@ class AdminViewModel(
                 _statusBanner.value = ActionBanner(health.message)
             }.onFailure { err ->
                 _statusBanner.value = ActionBanner(err.message ?: "Backend health check failed", isError = true)
+            }
+        }
+    }
+
+    fun syncAllPastFlutterwaveDeposits() {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = backendClient.adminSyncAllDeposits()
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _statusBanner.value = ActionBanner(resp.message)
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Unable to sync Flutterwave deposits", isError = true)
+            }
+        }
+    }
+
+    fun fundAdminWalletFromMainBalance(amountKobo: Long) {
+        if (amountKobo < 10000L) {
+            _statusBanner.value = ActionBanner("Minimum transfer from main balance is ₦100.00.", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            val idempotencyKey = "admin_main_${UUID.randomUUID()}"
+            val result = backendClient.adminFundFromMainBalance(amountKobo, idempotencyKey)
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _statusBanner.value = ActionBanner(resp.message)
+                // Refresh live Flutterwave NGN balance readout
+                backendClient.getProviderHealth().onSuccess { _providerHealth.value = it }
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Unable to draw from Flutterwave main balance", isError = true)
             }
         }
     }

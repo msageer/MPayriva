@@ -65,6 +65,50 @@ export class FlutterwaveClient {
     return { ok: res.ok, status: res.status, json };
   }
 
+  async getNgnBalance(): Promise<{ availableNaira: number; ledgerNaira: number; raw: Record<string, unknown> }> {
+    const { ok, json } = await this.requestJson(
+      "/balances/NGN",
+      "GET",
+      "GET /v3/balances/NGN",
+      "BALANCE_CHECK"
+    );
+    if (!ok || json.status !== "success") {
+      throw new Error(String(json.message || "Unable to fetch Flutterwave NGN balance"));
+    }
+    const data = (json.data || {}) as Record<string, unknown>;
+    return {
+      availableNaira: Number(data.available_balance ?? 0),
+      ledgerNaira: Number(data.ledger_balance ?? 0),
+      raw: json,
+    };
+  }
+
+  async listSuccessfulTransactions(params: {
+    customerEmail?: string;
+    txRef?: string;
+    from?: string;
+    page?: number;
+  } = {}): Promise<Array<Record<string, unknown>>> {
+    const qs = new URLSearchParams();
+    qs.set("status", "successful");
+    qs.set("currency", "NGN");
+    if (params.customerEmail) qs.set("customer_email", params.customerEmail);
+    if (params.txRef) qs.set("tx_ref", params.txRef);
+    if (params.from) qs.set("from", params.from);
+    if (params.page) qs.set("page", String(params.page));
+
+    const { ok, json } = await this.requestJson(
+      `/transactions?${qs.toString()}`,
+      "GET",
+      "GET /v3/transactions",
+      params.customerEmail || params.txRef || "SYNC_ALL"
+    );
+    if (!ok || json.status !== "success") {
+      throw new Error(String(json.message || "Unable to fetch Flutterwave transactions"));
+    }
+    return Array.isArray(json.data) ? (json.data as Array<Record<string, unknown>>) : [];
+  }
+
   async createDedicatedVirtualAccount(params: {
     email: string;
     txRef: string;

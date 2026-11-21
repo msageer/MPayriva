@@ -23,8 +23,12 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ConfirmationNumber
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.SimCard
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Card
@@ -93,7 +97,10 @@ fun transactionIconAndTint(type: TransactionType): Pair<ImageVector, Color> = wh
     TransactionType.ELECTRICITY -> Icons.Filled.Bolt to TintElectricity
     TransactionType.CABLE_TV -> Icons.Filled.Tv to TintCable
     TransactionType.RECHARGE_CARD -> Icons.Filled.ConfirmationNumber to TintRechargeCard
+    TransactionType.DATA_CARD -> Icons.Filled.SimCard to TintData
     TransactionType.WAEC_PIN, TransactionType.JAMB_PIN -> Icons.Filled.School to TintEducation
+    TransactionType.SMILE, TransactionType.SPECTRANET -> Icons.Filled.Router to TintData
+    TransactionType.BETTING -> Icons.Filled.SportsEsports to TintElectricity
     TransactionType.REFUND -> Icons.Filled.Replay to StatusReversed
 }
 
@@ -155,6 +162,24 @@ fun TransactionListRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (transaction.hasPrintableVouchers()) {
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Filled.Print,
+                            contentDescription = "Printable PDF available",
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (transaction.vouchers.size > 1) "${transaction.vouchers.size} Printable PINs (PDF)" else "Printable PIN / PDF",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
             Spacer(modifier = Modifier.width(8.dp))
             Column(horizontalAlignment = Alignment.End) {

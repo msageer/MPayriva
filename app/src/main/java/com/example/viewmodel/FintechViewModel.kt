@@ -6,20 +6,24 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.firebase.extractFirestoreRootError
 import com.example.data.model.AccountType
 import com.example.data.model.CustomerNotification
+import com.example.data.model.EpinVoucherRecord
 import com.example.data.model.LedgerEntry
 import com.example.data.model.PlatformConfig
 import com.example.data.model.ServiceCatalogItem
 import com.example.data.model.SupportCategory
 import com.example.data.model.SupportTicket
 import com.example.data.model.TransactionRecord
+import com.example.data.model.TransactionStatus
 import com.example.data.model.UserProfile
 import com.example.data.remote.CardFundingResponse
 import com.example.data.remote.CustomerVerificationResponse
+import com.example.data.remote.LiveStorefrontCatalogResponse
 import com.example.data.remote.PurchaseRequest
 import com.example.data.remote.PurchaseResponse
 import com.example.data.remote.TrustedBackendClient
 import com.example.data.remote.VirtualAccountResponse
 import com.example.data.repository.FintechRepository
+import com.google.firebase.Timestamp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -73,6 +77,12 @@ class FintechViewModel(
 
     private val _lastCardCheckout = MutableStateFlow<CardFundingResponse?>(null)
     val lastCardCheckout: StateFlow<CardFundingResponse?> = _lastCardCheckout.asStateFlow()
+
+    private val _liveCatalogState = MutableStateFlow<UiState<LiveStorefrontCatalogResponse>>(UiState.Loading)
+    val liveCatalogState: StateFlow<UiState<LiveStorefrontCatalogResponse>> = _liveCatalogState.asStateFlow()
+
+    private val _lastVoucherReceipt = MutableStateFlow<TransactionRecord?>(null)
+    val lastVoucherReceipt: StateFlow<TransactionRecord?> = _lastVoucherReceipt.asStateFlow()
 
     val userProfileState: StateFlow<UiState<UserProfile?>> = repository.observeUserProfile(currentUserId)
         .map<UserProfile?, UiState<UserProfile?>> { UiState.Success(it) }
@@ -137,11 +147,17 @@ class FintechViewModel(
     val platformConfig: StateFlow<PlatformConfig> = repository.observeBrandingConfig(currentUserId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), PlatformConfig())
 
+    private var hasFetchedLiveCatalogForUrl: String? = null
+
     init {
         viewModelScope.launch {
             platformConfig.collect { cfg ->
                 backendClient.updateBaseUrl(cfg.backendBaseUrl)
                 _isBackendConfigured.value = backendClient.isConfigured
+                if (backendClient.isConfigured && hasFetchedLiveCatalogForUrl != backendClient.activeBaseUrl) {
+                    hasFetchedLiveCatalogForUrl = backendClient.activeBaseUrl
+                    refreshLiveCatalog(force = false)
+                }
             }
         }
         if (!initialBootstrappedAdmin) {
@@ -151,6 +167,26 @@ class FintechViewModel(
                 _adminResolutionState.value = resolved
             }
         }
+    }
+
+    fun refreshLiveCatalog(force: Boolean = true) {
+        if (!backendClient.isConfigured) {
+            _liveCatalogState.value = UiState.Error("Backend URL is not configured yet.")
+            return
+        }
+        viewModelScope.launch {
+            _liveCatalogState.value = UiState.Loading
+            val result = backendClient.getLiveStorefrontCatalog(refresh = force)
+            result.onSuccess { live ->
+                _liveCatalogState.value = UiState.Success(live)
+            }.onFailure { err ->
+                _liveCatalogState.value = UiState.Error(err.message ?: "Unable to fetch live ClubKonnect plans")
+            }
+        }
+    }
+
+    fun dismissLastVoucherReceipt() {
+        _lastVoucherReceipt.value = null
     }
 
     fun toggleBalanceVisibility() {
@@ -293,6 +329,25 @@ class FintechViewModel(
         }
     }
 
+    fun syncBankDeposits() {
+        viewModelScope.launch {
+            _isSubmitting.value = true
+            val result = backendClient.syncWalletDeposits()
+            _isSubmitting.value = false
+            result.onSuccess { resp ->
+                _actionBanner.value = ActionBanner(resp.message)
+            }.onFailure { err ->
+                _actionBanner.value = ActionBanner(err.message ?: "Unable to sync bank transfers", isError = true)
+            }
+        }
+    }
+
+    fun syncFcmToken(token: String) {
+        viewModelScope.launch {
+            repository.saveFcmToken(token)
+        }
+    }
+
     fun verifyElectricityMeter(electricCompany: String, meterNo: String, meterType: String) {
         viewModelScope.launch {
             _isSubmitting.value = true
@@ -325,6 +380,38 @@ class FintechViewModel(
         }
     }
 
+    fun verifyBettingCustomer(bettingCompany: String, customerId: String) {
+        viewModelScope.launch {
+            _isSubmitting.value = true
+            val result = backendClient.verifyBettingCustomer(bettingCompany, customerId.trim())
+            _isSubmitting.value = false
+            result.onSuccess { resp ->
+                _verifiedCustomer.value = resp
+                if (!resp.verified) {
+                    _actionBanner.value = ActionBanner(resp.message ?: "Betting ID verification failed", isError = true)
+                }
+            }.onFailure { err ->
+                _actionBanner.value = ActionBanner(err.message ?: "Betting verification unavailable", isError = true)
+            }
+        }
+    }
+
+    fun verifySmileAccount(mobileNumber: String) {
+        viewModelScope.launch {
+            _isSubmitting.value = true
+            val result = backendClient.verifySmileAccount(mobileNumber.trim())
+            _isSubmitting.value = false
+            result.onSuccess { resp ->
+                _verifiedCustomer.value = resp
+                if (!resp.verified) {
+                    _actionBanner.value = ActionBanner(resp.message ?: "Smile account verification failed", isError = true)
+                }
+            }.onFailure { err ->
+                _actionBanner.value = ActionBanner(err.message ?: "Smile verification unavailable", isError = true)
+            }
+        }
+    }
+
     /**
      * Executes the 13-step purchase pipeline:
      * 1. Verifies Transaction PIN against salted hash (with lockout protection).
@@ -336,6 +423,7 @@ class FintechViewModel(
         serviceType: String,
         providerCode: String,
         productCode: String,
+        productTitle: String = "",
         recipient: String,
         amountKobo: Long,
         meterType: String? = null,
@@ -386,6 +474,37 @@ class FintechViewModel(
             _isSubmitting.value = false
             responseResult.onSuccess { resp ->
                 _actionBanner.value = ActionBanner(resp.message)
+                val voucherRecords = resp.vouchers.orEmpty().map { v ->
+                    EpinVoucherRecord(
+                        pin = v.pin,
+                        serialNumber = v.serialNumber,
+                        batchNo = v.batchNo,
+                        network = v.network,
+                        denomination = v.denomination,
+                        loadCode = v.loadCode,
+                        transactionDate = v.transactionDate
+                    )
+                }
+                if (resp.status == "SUCCESSFUL" && (voucherRecords.isNotEmpty() || !resp.tokenOrPin.isNullOrBlank())) {
+                    _lastVoucherReceipt.value = TransactionRecord(
+                        id = resp.reference.orEmpty(),
+                        userId = currentUserId,
+                        reference = resp.reference.orEmpty(),
+                        type = serviceType,
+                        status = TransactionStatus.SUCCESSFUL.name,
+                        provider = "CLUBKONNECT",
+                        providerCode = providerCode,
+                        recipient = recipient.trim(),
+                        productName = productTitle.ifBlank { serviceType },
+                        productCode = productCode,
+                        sellingPriceKobo = amountKobo,
+                        totalAmountKobo = amountKobo,
+                        tokenOrPin = resp.tokenOrPin,
+                        serialNumber = resp.serialNumber,
+                        vouchers = voucherRecords,
+                        createdAt = Timestamp.now()
+                    )
+                }
             }.onFailure { err ->
                 _actionBanner.value = ActionBanner(err.message ?: "Transaction request failed", isError = true)
             }

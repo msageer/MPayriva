@@ -24,12 +24,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ReportProblem
@@ -72,6 +75,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.core.BrandingConfig
 import com.example.core.CurrencyFormatter
+import com.example.core.VoucherPdfGenerator
 import com.example.data.model.LedgerEntry
 import com.example.data.model.TransactionRecord
 import com.example.data.model.TransactionStatus
@@ -96,6 +100,7 @@ fun WalletScreen(
     lastCardCheckout: CardFundingResponse?,
     isSubmitting: Boolean,
     onRequestVirtualAccount: (bvn: String?) -> Unit,
+    onSyncBankDeposits: () -> Unit = {},
     onInitiateCardFunding: (amountKobo: Long) -> Unit,
     onVerifyCardFunding: (reference: String) -> Unit,
     onClearCardCheckout: () -> Unit
@@ -222,6 +227,24 @@ fun WalletScreen(
                                         }) {
                                             Icon(Icons.Filled.ContentCopy, contentDescription = "Copy account number")
                                         }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(10.dp))
+                                OutlinedButton(
+                                    onClick = onSyncBankDeposits,
+                                    enabled = !isSubmitting,
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("sync_bank_deposits_button")
+                                ) {
+                                    if (isSubmitting) {
+                                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        Icon(Icons.Filled.Refresh, contentDescription = "Sync bank transfers", modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Sync Bank Transfers", fontWeight = FontWeight.SemiBold)
                                     }
                                 }
                             } else {
@@ -455,25 +478,31 @@ fun TransactionsScreen(
 
     val filters = listOf(
         "ALL" to "All",
+        "PRINTABLE" to "Printable PINs",
         "SUCCESSFUL" to "Successful",
         "PENDING" to "Pending",
         "FAILED" to "Failed",
         "WALLET_FUNDING" to "Wallet Funding",
         "AIRTIME" to "Airtime",
         "DATA" to "Data",
+        "RECHARGE_CARD" to "Recharge Cards",
+        "DATA_CARD" to "Data Cards",
         "ELECTRICITY" to "Electricity",
         "CABLE_TV" to "Cable TV",
-        "RECHARGE_CARD" to "Recharge Cards",
         "WAEC_PIN" to "WAEC",
-        "JAMB_PIN" to "JAMB"
+        "JAMB_PIN" to "JAMB",
+        "SMILE" to "Broadband",
+        "BETTING" to "Betting"
     )
 
     val filtered = remember(transactions, searchQuery, selectedFilter) {
         transactions.filter { tx ->
             val matchesFilter = when (selectedFilter) {
                 "ALL" -> true
+                "PRINTABLE" -> tx.hasPrintableVouchers()
                 "SUCCESSFUL", "PENDING", "FAILED" -> tx.status.equals(selectedFilter, ignoreCase = true) ||
                     (selectedFilter == "PENDING" && tx.status.equals("PROCESSING", ignoreCase = true))
+                "SMILE" -> tx.type.equals("SMILE", ignoreCase = true) || tx.type.equals("SPECTRANET", ignoreCase = true)
                 else -> tx.type.equals(selectedFilter, ignoreCase = true)
             }
             val q = searchQuery.trim()
@@ -554,6 +583,7 @@ fun TransactionsScreen(
 fun TransactionReceiptDialog(
     transaction: TransactionRecord,
     isSubmitting: Boolean,
+    businessHeader: String = BrandingConfig.Default.appDisplayName,
     onDismiss: () -> Unit,
     onRequeryStatus: (String) -> Unit,
     onReportIssue: (String) -> Unit
@@ -561,6 +591,9 @@ fun TransactionReceiptDialog(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val status = transaction.resolvedStatus()
+    val printableVouchers = remember(transaction) {
+        if (transaction.hasPrintableVouchers()) VoucherPdfGenerator.extractPrintableVouchers(transaction) else emptyList()
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -573,7 +606,11 @@ fun TransactionReceiptDialog(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            Column(modifier = Modifier.padding(20.dp)) {
+            Column(
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp)
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -616,7 +653,112 @@ fun TransactionReceiptDialog(
                 ReceiptRow("Service Fee", CurrencyFormatter.formatKobo(transaction.feeKobo), mono = true)
                 ReceiptRow("Date", CurrencyFormatter.formatDateTime(transaction.createdAt?.toDate()))
 
-                if (!transaction.tokenOrPin.isNullOrBlank()) {
+                if (printableVouchers.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Printable E-PINs & Tokens (${printableVouchers.size})",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.secondary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        printableVouchers.forEachIndexed { idx, voucher ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.25f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        clipboard.setText(AnnotatedString(voucher.pin))
+                                        Toast.makeText(context, "PIN #${idx + 1} copied", Toast.LENGTH_SHORT).show()
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "VOUCHER #${idx + 1} • ${voucher.network.ifBlank { transaction.resolvedType().label }}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.secondary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = voucher.pin,
+                                            style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMono),
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        if (voucher.serialNumber.isNotBlank()) {
+                                            Text(
+                                                text = "S/N: ${voucher.serialNumber}",
+                                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono)
+                                            )
+                                        }
+                                        if (voucher.batchNo.isNotBlank()) {
+                                            Text(
+                                                text = "Batch: ${voucher.batchNo}",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                        Text(
+                                            text = "Load: ${voucher.loadCode.ifBlank { "*311*PIN#" }}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Filled.ContentCopy,
+                                        contentDescription = "Copy voucher PIN",
+                                        tint = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            VoucherPdfGenerator.printOrSaveAsPdf(
+                                context = context,
+                                tx = transaction,
+                                businessHeader = businessHeader
+                            )
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = NavyDeep),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("print_voucher_pdf_button")
+                    ) {
+                        Icon(Icons.Filled.Print, contentDescription = "Print or save PDF", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Print / Save E-PINs as PDF", fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            VoucherPdfGenerator.shareVoucherPdf(
+                                context = context,
+                                tx = transaction,
+                                businessHeader = businessHeader
+                            )
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
+                            .testTag("share_voucher_pdf_button")
+                    ) {
+                        Icon(Icons.Filled.PictureAsPdf, contentDescription = "Share PDF", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Export / Share PDF Voucher Sheet", fontWeight = FontWeight.SemiBold)
+                    }
+                } else if (!transaction.tokenOrPin.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Surface(
                         color = MaterialTheme.colorScheme.secondaryContainer,
@@ -657,7 +799,7 @@ fun TransactionReceiptDialog(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 if (status == TransactionStatus.PENDING || status == TransactionStatus.PROCESSING || status == TransactionStatus.INITIATED) {
                     OutlinedButton(
@@ -702,7 +844,12 @@ fun TransactionReceiptDialog(
                                 appendLine("Amount: ${CurrencyFormatter.formatKobo(transaction.totalAmountKobo)}")
                                 appendLine("Fee: ${CurrencyFormatter.formatKobo(transaction.feeKobo)}")
                                 appendLine("Status: ${status.label}")
-                                if (!transaction.tokenOrPin.isNullOrBlank()) {
+                                if (printableVouchers.isNotEmpty()) {
+                                    appendLine("Vouchers:")
+                                    printableVouchers.forEachIndexed { idx, v ->
+                                        appendLine("#${idx + 1}: ${v.pin}${if (v.serialNumber.isNotBlank()) " (S/N: ${v.serialNumber})" else ""}")
+                                    }
+                                } else if (!transaction.tokenOrPin.isNullOrBlank()) {
                                     appendLine("Token/PIN: ${transaction.tokenOrPin}")
                                 }
                                 appendLine("Date: ${CurrencyFormatter.formatDateTime(transaction.createdAt?.toDate())}")
@@ -723,7 +870,7 @@ fun TransactionReceiptDialog(
                     ) {
                         Icon(Icons.Filled.Share, contentDescription = "Share receipt", modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Share")
+                        Text("Share Text")
                     }
                 }
 

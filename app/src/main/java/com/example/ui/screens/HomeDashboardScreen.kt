@@ -33,7 +33,10 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.SimCard
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -123,10 +126,13 @@ fun HomeDashboardScreen(
     val shortcuts = listOf(
         QuickServiceShortcut("Airtime", ServiceType.AIRTIME, Icons.Filled.PhoneAndroid, TintAirtime),
         QuickServiceShortcut("Data", ServiceType.DATA, Icons.Filled.Wifi, TintData),
+        QuickServiceShortcut("Recharge PIN", ServiceType.RECHARGE_CARD, Icons.Filled.ConfirmationNumber, TintRechargeCard),
+        QuickServiceShortcut("Data Card", ServiceType.DATA_CARD, Icons.Filled.SimCard, TintData),
         QuickServiceShortcut("Electricity", ServiceType.ELECTRICITY, Icons.Filled.Bolt, TintElectricity),
         QuickServiceShortcut("Cable TV", ServiceType.CABLE_TV, Icons.Filled.Tv, TintCable),
-        QuickServiceShortcut("Recharge PIN", ServiceType.RECHARGE_CARD, Icons.Filled.ConfirmationNumber, TintRechargeCard),
-        QuickServiceShortcut("Education", ServiceType.WAEC_PIN, Icons.Filled.School, TintEducation)
+        QuickServiceShortcut("Education", ServiceType.WAEC_PIN, Icons.Filled.School, TintEducation),
+        QuickServiceShortcut("Broadband", ServiceType.SMILE, Icons.Filled.Router, TintAirtime),
+        QuickServiceShortcut("Betting", ServiceType.BETTING, Icons.Filled.SportsEsports, TintElectricity)
     )
 
     LazyColumn(

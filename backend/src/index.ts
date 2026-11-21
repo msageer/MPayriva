@@ -1,11 +1,12 @@
 import express, { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
 import { FieldValue } from "firebase-admin/firestore";
-import { authAdmin, CONFIG, db, hashPin, notifyCustomer, timingSafeEqualStr } from "./config";
+import { authAdmin, CONFIG, db, hashPin, logProviderEvent, notifyCustomer, timingSafeEqualStr } from "./config";
 import { ClubKonnectClient } from "./clubKonnectClient";
 import { FlutterwaveClient } from "./flutterwaveClient";
 import { atomicCreditWallet, atomicReserveAndCreatePurchase, atomicReverseConfirmedFailure } from "./ledgerEngine";
 import { classifyClubKonnectStatus, computeAuthorizedPurchasePricing } from "./pricingEngine";
+import { findAuthorizedLiveProduct, getLiveStorefrontCatalog, invalidateLiveCatalogCache } from "./liveCatalogEngine";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -115,13 +116,15 @@ async function reconcileTransactionWithClubKonnect(reference: string) {
   }
 
   const queryRes = await clubKonnect.queryTransactionStatus(reference);
-  const classified = classifyClubKonnectStatus(queryRes);
+  const classified = classifyClubKonnectStatus(queryRes, txData.type === "DATA_CARD");
 
   if (classified.resolution === "SUCCESSFUL") {
     await txRef.update({
       status: "SUCCESSFUL",
       providerOrderId: classified.orderId || txData.providerOrderId || null,
       tokenOrPin: classified.tokenOrPin || txData.tokenOrPin || null,
+      serialNumber: classified.serialNumber || txData.serialNumber || null,
+      ...(classified.vouchers.length > 0 ? { vouchers: classified.vouchers } : {}),
       updatedAt: FieldValue.serverTimestamp(),
     });
     await notifyCustomer({
@@ -135,6 +138,7 @@ async function reconcileTransactionWithClubKonnect(reference: string) {
       notFound: false as const,
       status: "SUCCESSFUL",
       tokenOrPin: classified.tokenOrPin || txData.tokenOrPin || null,
+      vouchers: classified.vouchers,
       message: "Provider confirmed transaction completed.",
     };
   }
@@ -171,6 +175,17 @@ app.get("/payment-complete", (_req: Request, res: Response) => {
   res.type("text/plain").send(
     "Payment submitted. Return to the M-Sageer Pay app and tap 'Verify Payment Status' or wait for automatic webhook settlement."
   );
+});
+
+// 0B. LIVE STOREFRONT CATALOG (Fetches all live ClubKonnect services + e-PIN/Data Card stock availability)
+app.get("/api/v1/catalog/live", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const forceRefresh = req.query.refresh === "true" || req.query.refresh === "1";
+    const liveCatalog = await getLiveStorefrontCatalog(clubKonnect, forceRefresh);
+    res.json(liveCatalog);
+  } catch (err) {
+    res.status(400).json({ status: "error", message: (err as Error).message });
+  }
 });
 
 // 1. WALLET: Dedicated Flutterwave Virtual Account
@@ -216,12 +231,15 @@ app.post("/api/v1/wallet/virtual-account", requireAuth, async (req: Authenticate
     const flwData = (flw.data || {}) as Record<string, unknown>;
     const bankName = String(flwData.bank_name || "Wema Bank");
     const accountNumber = String(flwData.account_number || "");
+    const orderRef = String(flwData.order_ref || "");
     const accountName = String(user.businessName || user.fullName);
 
     await userRef.update({
       virtualBankName: bankName,
       virtualAccountNumber: accountNumber,
       virtualAccountName: accountName,
+      virtualAccountOrderRef: orderRef || null,
+      virtualAccountTxRef: txRef,
       updatedAt: FieldValue.serverTimestamp(),
     });
 
@@ -399,6 +417,52 @@ app.post("/api/v1/verify/smartcard", requireAuth, async (req: AuthenticatedReque
   }
 });
 
+// 4B. VERIFY BETTING ACCOUNT (ClubKonnect)
+app.post("/api/v1/verify/betting", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const bettingCompany = String(req.body?.bettingCompany || "").trim();
+    const customerId = String(req.body?.customerId || "").trim();
+    if (!bettingCompany || customerId.length < 3) {
+      res.status(400).json({ verified: false, message: "Enter a valid betting platform and customer ID." });
+      return;
+    }
+    const result = await clubKonnect.verifyBettingCustomer({ bettingCompany, customerId });
+    const name = String(result.customer_name || result.Customer_Name || "").trim();
+    const valid = Boolean(name && !name.toUpperCase().includes("INVALID"));
+    res.json({
+      verified: valid,
+      customerName: valid ? name : null,
+      message: valid ? "Betting account verified" : "Unable to verify betting account ID",
+    });
+  } catch (err) {
+    res.status(400).json({ verified: false, message: (err as Error).message });
+  }
+});
+
+// 4C. VERIFY SMILE BROADBAND ACCOUNT (ClubKonnect)
+app.post("/api/v1/verify/smile", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const mobileNumber = String(req.body?.mobileNumber || "").trim();
+    if (mobileNumber.length < 5) {
+      res.status(400).json({ verified: false, message: "Enter a valid Smile account email or number." });
+      return;
+    }
+    const result = await clubKonnect.verifySmileAccount({
+      mobileNetwork: "smile-direct",
+      mobileNumber,
+    });
+    const name = String(result.customer_name || result.Customer_Name || "").trim();
+    const valid = Boolean(name && !name.toUpperCase().includes("INVALID"));
+    res.json({
+      verified: valid,
+      customerName: valid ? name : null,
+      message: valid ? "Smile account verified" : "Unable to verify Smile account",
+    });
+  } catch (err) {
+    res.status(400).json({ verified: false, message: (err as Error).message });
+  }
+});
+
 // 5. CENTRAL TRANSACTION ENGINE (13-Step Server-Authoritative Purchase)
 app.post("/api/v1/transactions/purchase", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -442,7 +506,7 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
       .where("enabled", "==", true)
       .get();
 
-    const matchedCatalog = catalogSnap.docs
+    let matchedCatalog = catalogSnap.docs
       .map((d) => d.data())
       .find(
         (item) =>
@@ -451,6 +515,24 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
           item.providerCode === normalizedProvider ||
           item.providerCode === "ALL_DISCOS"
       );
+
+    // Check live ClubKonnect catalog & stock availability (especially for RECHARGE_CARD, DATA_CARD, and live ClubKonnect plans)
+    const liveLookup = await findAuthorizedLiveProduct(
+      clubKonnect,
+      normalizedService,
+      normalizedProvider,
+      normalizedProduct
+    );
+    if (!liveLookup.available) {
+      res.status(400).json({
+        status: "FAILED",
+        message: liveLookup.unavailableReason || `${normalizedService} is currently unavailable on ClubKonnect.`,
+      });
+      return;
+    }
+    if (!matchedCatalog && liveLookup.pricingDoc) {
+      matchedCatalog = liveLookup.pricingDoc as Record<string, unknown>;
+    }
 
     const pricing = computeAuthorizedPurchasePricing({
       serviceType: normalizedService,
@@ -540,23 +622,60 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
             requestId: reference,
           });
           break;
+        case "DATA_CARD":
+          providerRes = await clubKonnect.buyDataCardEpin({
+            mobileNetwork: normalizedProvider,
+            dataPlan: normalizedProduct,
+            quantity: pricing.quantity,
+            requestId: reference,
+          });
+          break;
+        case "SMILE":
+          providerRes = await clubKonnect.buySmileData({
+            mobileNetwork: normalizedProvider || "smile-direct",
+            dataPlan: normalizedProduct,
+            mobileNumber: recipient.trim(),
+            requestId: reference,
+          });
+          break;
+        case "SPECTRANET":
+          providerRes = await clubKonnect.buySpectranetPin({
+            mobileNetwork: normalizedProvider || "spectranet",
+            dataPlan: normalizedProduct,
+            mobileNumber: recipient.trim(),
+            requestId: reference,
+          });
+          break;
+        case "BETTING":
+          providerRes = await clubKonnect.fundBettingWallet({
+            bettingCompany: normalizedProvider,
+            customerId: recipient.trim(),
+            amountNaira: pricing.faceValueNaira,
+            requestId: reference,
+          });
+          break;
         default:
           throw new Error(`Unsupported service type: ${normalizedService}`);
       }
 
-      const classified = classifyClubKonnectStatus(providerRes);
+      const classified = classifyClubKonnectStatus(providerRes, normalizedService === "DATA_CARD");
 
       if (classified.resolution === "SUCCESSFUL") {
         await db.collection("transactions").doc(reference).update({
           status: "SUCCESSFUL",
           providerOrderId: classified.orderId,
           tokenOrPin: classified.tokenOrPin,
+          serialNumber: classified.serialNumber,
+          ...(classified.vouchers.length > 0 ? { vouchers: classified.vouchers } : {}),
           updatedAt: FieldValue.serverTimestamp(),
         });
         await notifyCustomer({
           userId: uid,
           title: `${pricing.productName} Successful`,
-          body: `Your order (${reference}) completed successfully.`,
+          body:
+            classified.vouchers.length > 0
+              ? `Generated ${classified.vouchers.length} printable e-PIN(s) (Ref: ${reference}). Open History anytime to print or save as PDF.`
+              : `Your order (${reference}) completed successfully.`,
           type: "PURCHASE_SUCCESS",
           reference,
         });
@@ -564,8 +683,13 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
           status: "SUCCESSFUL",
           transactionId: reference,
           reference,
-          message: "Transaction successful.",
+          message:
+            classified.vouchers.length > 0
+              ? `Generated ${classified.vouchers.length} e-PIN voucher(s). Ready to print or save as PDF!`
+              : "Transaction successful.",
           tokenOrPin: classified.tokenOrPin,
+          serialNumber: classified.serialNumber,
+          vouchers: classified.vouchers,
         });
       } else if (classified.resolution === "PENDING") {
         await db.collection("transactions").doc(reference).update({
@@ -658,67 +782,449 @@ async function handleClubKonnectCallback(req: Request, res: Response) {
 app.get("/webhooks/clubkonnect", handleClubKonnectCallback);
 app.post("/webhooks/clubkonnect", handleClubKonnectCallback);
 
+function sanitizeDocId(raw: string, fallback: string): string {
+  const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
+  return cleaned.length >= 3 ? cleaned : fallback;
+}
+
+function extractFlutterwaveTxMeta(verifiedData: Record<string, unknown>) {
+  const meta = (verifiedData.meta || {}) as Record<string, unknown>;
+  const customer = (verifiedData.customer || {}) as Record<string, unknown>;
+  const accountObj = (verifiedData.account || {}) as Record<string, unknown>;
+
+  const flwId = String(verifiedData.id || "").trim();
+  const txRef = String(verifiedData.tx_ref || "").trim();
+  const orderRef = String(meta.order_ref || verifiedData.order_ref || "").trim();
+  const rawEmail = String(customer.email || "").trim();
+  const emailLower = rawEmail.toLowerCase();
+  const paymentType = String(verifiedData.payment_type || "bank_transfer").trim();
+
+  const candidateAccountNumbers = Array.from(
+    new Set(
+      [
+        meta.account_number,
+        meta.bankaccountnumber,
+        meta.beneficiary_account_number,
+        accountObj.account_number,
+        verifiedData.account_number,
+      ]
+        .map((v) => String(v || "").trim())
+        .filter((v) => /^\d{10}$/.test(v))
+    )
+  );
+
+  const vaPrefixMatch = txRef.match(/^MSGR-VA-([A-Za-z0-9]{6,12})-/);
+  const uidPrefix = vaPrefixMatch ? vaPrefixMatch[1] : "";
+
+  return { flwId, txRef, orderRef, rawEmail, emailLower, paymentType, candidateAccountNumbers, uidPrefix };
+}
+
+async function resolveUserForFlutterwaveTx(verifiedData: Record<string, unknown>): Promise<string | null> {
+  const info = extractFlutterwaveTxMeta(verifiedData);
+
+  // 1. Match by stored virtualAccountTxRef
+  if (info.txRef) {
+    const byTxRef = await db.collection("users").where("virtualAccountTxRef", "==", info.txRef).limit(1).get();
+    if (!byTxRef.empty) return byTxRef.docs[0].id;
+  }
+
+  // 2. Match by stored virtualAccountOrderRef
+  if (info.orderRef) {
+    const byOrderRef = await db.collection("users").where("virtualAccountOrderRef", "==", info.orderRef).limit(1).get();
+    if (!byOrderRef.empty) return byOrderRef.docs[0].id;
+  }
+
+  // 3. Match by dedicated virtual account number
+  for (const acctNo of info.candidateAccountNumbers) {
+    const byAcct = await db.collection("users").where("virtualAccountNumber", "==", acctNo).limit(1).get();
+    if (!byAcct.empty) return byAcct.docs[0].id;
+  }
+
+  // 4. Match by exact email
+  if (info.rawEmail) {
+    const byEmail = await db.collection("users").where("email", "==", info.rawEmail).limit(1).get();
+    if (!byEmail.empty) return byEmail.docs[0].id;
+  }
+
+  // 5. Fallback scan: uid prefix from MSGR-VA-{uid8}-... OR case-insensitive email match
+  if (info.uidPrefix || info.emailLower) {
+    const allUsersSnap = await db.collection("users").get();
+    for (const docSnap of allUsersSnap.docs) {
+      if (info.uidPrefix && docSnap.id.startsWith(info.uidPrefix)) {
+        return docSnap.id;
+      }
+      const docEmail = String(docSnap.data()?.email || "").trim().toLowerCase();
+      if (info.emailLower && docEmail && docEmail === info.emailLower) {
+        return docSnap.id;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function creditVerifiedFlutterwaveTx(
+  verifiedData: Record<string, unknown>,
+  explicitUserId?: string
+): Promise<{
+  eligible: boolean;
+  matched: boolean;
+  alreadyProcessed: boolean;
+  userId: string | null;
+  reference: string;
+  netCreditKobo: number;
+}> {
+  const flwStatus = String(verifiedData.status || "").toLowerCase();
+  const flwCurrency = String(verifiedData.currency || "").toUpperCase();
+  const info = extractFlutterwaveTxMeta(verifiedData);
+
+  if (flwStatus !== "successful" || flwCurrency !== "NGN" || !info.flwId) {
+    return { eligible: false, matched: false, alreadyProcessed: false, userId: null, reference: "", netCreditKobo: 0 };
+  }
+
+  const amountKobo = Math.round(Number(verifiedData.amount || 0) * 100);
+  const feeKobo = Math.round(Number(verifiedData.app_fee || 0) * 100);
+  if (amountKobo <= 0) {
+    return { eligible: false, matched: false, alreadyProcessed: false, userId: null, reference: "", netCreditKobo: 0 };
+  }
+
+  const userId = explicitUserId || (await resolveUserForFlutterwaveTx(verifiedData));
+  if (!userId) {
+    return { eligible: true, matched: false, alreadyProcessed: false, userId: null, reference: "", netCreditKobo: 0 };
+  }
+
+  // Permanent virtual accounts reuse the same tx_ref across multiple bank transfers,
+  // so use unique FLW-VA-{flwId} references for VA/bank transfers while preserving one-time MSGR-FLW-* refs.
+  const isOneTimeCheckoutRef = info.txRef.startsWith("MSGR-FLW-");
+  const rawReference = isOneTimeCheckoutRef ? info.txRef : `FLW-VA-${info.flwId}`;
+  const reference = sanitizeDocId(rawReference, `FLW-${info.flwId}`);
+  const idempotencyKey = `flw_tx_${info.flwId}`;
+  const netCreditKobo = Math.max(0, amountKobo - feeKobo);
+
+  const creditRes = await atomicCreditWallet({
+    userId,
+    idempotencyKey,
+    reference,
+    amountKobo,
+    feeKobo,
+    providerOrderId: info.flwId,
+    narration: `Flutterwave verified deposit (${info.paymentType})`,
+  });
+
+  return {
+    eligible: true,
+    matched: true,
+    alreadyProcessed: creditRes.alreadyProcessed,
+    userId,
+    reference,
+    netCreditKobo,
+  };
+}
+
+// 2C. WALLET: Sync Past & Recent Settled Flutterwave Bank Transfers for Signed-In User
+app.post("/api/v1/wallet/sync-deposits", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const uid = req.uid!;
+    const userSnap = await db.collection("users").doc(uid).get();
+    if (!userSnap.exists) {
+      res.status(404).json({ status: "error", message: "Customer profile not found." });
+      return;
+    }
+    const user = userSnap.data()!;
+    const userEmail = String(user.email || "").trim();
+    const userEmailLower = userEmail.toLowerCase();
+    const storedVaTxRef = String(user.virtualAccountTxRef || "").trim();
+    const storedVaNumber = String(user.virtualAccountNumber || "").trim();
+    const uidPrefix = uid.slice(0, 8);
+
+    const candidateTxs: Array<Record<string, unknown>> = [];
+    if (userEmail) {
+      const byEmail = await flutterwave.listSuccessfulTransactions({ customerEmail: userEmail, page: 1 });
+      candidateTxs.push(...byEmail);
+    }
+    if (storedVaTxRef) {
+      const byTxRef = await flutterwave.listSuccessfulTransactions({ txRef: storedVaTxRef, page: 1 });
+      candidateTxs.push(...byTxRef);
+    }
+
+    const seenIds = new Set<string>();
+    let syncedCount = 0;
+    let alreadyCreditedCount = 0;
+    let totalNewlyCreditedKobo = 0;
+
+    for (const txItem of candidateTxs) {
+      const txId = String(txItem.id || "").trim();
+      if (!txId || seenIds.has(txId)) continue;
+      seenIds.add(txId);
+
+      // Independently verify every transaction against Flutterwave before crediting
+      const verification = await flutterwave.verifyTransactionById(txId);
+      const verifiedData = (verification.data || {}) as Record<string, unknown>;
+      if (verification.status !== "success") continue;
+
+      const meta = extractFlutterwaveTxMeta(verifiedData);
+      const belongsToUser =
+        (meta.emailLower && meta.emailLower === userEmailLower) ||
+        (storedVaTxRef && meta.txRef === storedVaTxRef) ||
+        (meta.uidPrefix && uid.startsWith(meta.uidPrefix)) ||
+        (storedVaNumber && meta.candidateAccountNumbers.includes(storedVaNumber)) ||
+        (meta.txRef.startsWith(`MSGR-VA-${uidPrefix}-`));
+
+      if (!belongsToUser) continue;
+
+      const outcome = await creditVerifiedFlutterwaveTx(verifiedData, uid);
+      if (outcome.eligible && outcome.matched) {
+        if (outcome.alreadyProcessed) {
+          alreadyCreditedCount += 1;
+        } else {
+          syncedCount += 1;
+          totalNewlyCreditedKobo += outcome.netCreditKobo;
+        }
+      }
+    }
+
+    const message =
+      syncedCount > 0
+        ? `Credited ${syncedCount} verified Flutterwave deposit(s) totaling ₦${(totalNewlyCreditedKobo / 100).toFixed(2)}.`
+        : alreadyCreditedCount > 0
+          ? `All ${alreadyCreditedCount} settled deposit(s) are already credited to your wallet.`
+          : "No new settled Flutterwave deposits found for your account yet.";
+
+    res.json({
+      status: "success",
+      syncedCount,
+      alreadyCreditedCount,
+      totalNewlyCreditedKobo,
+      message,
+    });
+  } catch (err) {
+    res.status(400).json({ status: "error", message: (err as Error).message });
+  }
+});
+
 // 7. FLUTTERWAVE WEBHOOK (Signature-verified + Independently verified via GET /v3/transactions/:id/verify)
 app.post("/webhooks/flutterwave", async (req: Request, res: Response) => {
   const sig = req.headers["verif-hash"] as string | undefined;
+  const event = String(req.body?.event || "unknown");
+  const rawData = (req.body?.data || req.body || {}) as Record<string, unknown>;
+  const txId = String(rawData.id || "").trim();
+
   if (!flutterwave.verifyWebhookSignature(sig)) {
+    await logProviderEvent({
+      provider: "FLUTTERWAVE",
+      action: "WEBHOOK /webhooks/flutterwave",
+      reference: txId || event,
+      statusCode: "401",
+      outcome: "REJECTED_SIGNATURE",
+      message: `Invalid verif-hash header on event=${event}. Check FLUTTERWAVE_WEBHOOK_HASH on backend vs Flutterwave Dashboard Secret Hash.`,
+    });
     res.status(401).json({ status: "error", message: "Invalid webhook signature" });
     return;
   }
 
   try {
-    const event = req.body?.event;
-    const data = req.body?.data || {};
-    if (event === "charge.completed" && data.status === "successful" && data.id) {
-      const verification = await flutterwave.verifyTransactionById(String(data.id));
+    const payloadStatus = String(rawData.status || "").toLowerCase();
+    const isSuccessfulCharge =
+      Boolean(txId) &&
+      (event === "charge.completed" || payloadStatus === "successful");
+
+    if (isSuccessfulCharge) {
+      const verification = await flutterwave.verifyTransactionById(txId);
       const verifiedData = (verification.data || {}) as Record<string, unknown>;
-      if (verifiedData.status === "successful" && verifiedData.currency === "NGN") {
-        const email = String(((verifiedData.customer || {}) as Record<string, unknown>).email || "");
-        const usersSnap = await db.collection("users").where("email", "==", email).limit(1).get();
-        if (!usersSnap.empty) {
-          const userId = usersSnap.docs[0].id;
-          const amountKobo = Math.round(Number(verifiedData.amount || 0) * 100);
-          const feeKobo = Math.round(Number(verifiedData.app_fee || 0) * 100);
-          const reference = String(verifiedData.tx_ref || `FLW-${verifiedData.id}`);
-          await atomicCreditWallet({
-            userId,
-            idempotencyKey: `flw_tx_${verifiedData.id}`,
-            reference,
-            amountKobo,
-            feeKobo,
-            providerOrderId: String(verifiedData.id),
-            narration: `Flutterwave verified deposit (${verifiedData.payment_type || "transfer"})`,
-          });
-        }
-      }
+      const outcome = await creditVerifiedFlutterwaveTx(verifiedData);
+
+      await logProviderEvent({
+        provider: "FLUTTERWAVE",
+        action: "WEBHOOK /webhooks/flutterwave",
+        reference: outcome.reference || txId,
+        statusCode: "200",
+        outcome: !outcome.eligible
+          ? "IGNORED_INELIGIBLE"
+          : !outcome.matched
+            ? "UNMATCHED_CUSTOMER"
+            : outcome.alreadyProcessed
+              ? "DUPLICATE_IGNORED"
+              : "CREDITED",
+        message: outcome.matched
+          ? `event=${event} user=${outcome.userId} netKobo=${outcome.netCreditKobo} alreadyProcessed=${outcome.alreadyProcessed}`
+          : `event=${event} txId=${txId} could not be matched to a customer profile.`,
+      });
+    } else {
+      await logProviderEvent({
+        provider: "FLUTTERWAVE",
+        action: "WEBHOOK /webhooks/flutterwave",
+        reference: txId || event,
+        statusCode: "200",
+        outcome: "IGNORED_EVENT",
+        message: `Received non-credit event=${event} status=${payloadStatus}`,
+      });
     }
     res.status(200).json({ received: true });
   } catch (err) {
+    await logProviderEvent({
+      provider: "FLUTTERWAVE",
+      action: "WEBHOOK /webhooks/flutterwave",
+      reference: txId || event,
+      statusCode: "500",
+      outcome: "ERROR",
+      message: (err as Error).message.slice(0, 300),
+    });
     res.status(500).json({ status: "error", message: (err as Error).message });
   }
 });
 
-// 8. ADMIN: PROVIDER HEALTH CHECK
+// 8. ADMIN: PROVIDER HEALTH CHECK (ClubKonnect Balance + Flutterwave Main NGN Balance)
 app.get("/api/v1/admin/provider-health", requireAuth, requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
-  let balance: string | null = null;
+  let ckBalance: string | null = null;
+  let flwAvailable: string | null = null;
+  let flwLedger: string | null = null;
+
   if (clubKonnect.isConfigured) {
     try {
       const balRes = await clubKonnect.getWalletBalance();
-      balance = String(balRes.balance || balRes.Balance || "Unavailable");
+      ckBalance = String(balRes.balance || balRes.Balance || "Unavailable");
     } catch {
-      balance = "Query failed";
+      ckBalance = "Query failed";
     }
   }
+
+  if (flutterwave.isConfigured) {
+    try {
+      const flwBal = await flutterwave.getNgnBalance();
+      flwAvailable = flwBal.availableNaira.toFixed(2);
+      flwLedger = flwBal.ledgerNaira.toFixed(2);
+    } catch {
+      flwAvailable = "Query failed";
+      flwLedger = "Query failed";
+    }
+  }
+
   res.json({
     clubKonnectConfigured: clubKonnect.isConfigured,
-    clubKonnectBalanceNaira: balance,
+    clubKonnectBalanceNaira: ckBalance,
     flutterwaveConfigured: flutterwave.isConfigured,
+    flutterwaveAvailableBalanceNaira: flwAvailable,
+    flutterwaveLedgerBalanceNaira: flwLedger,
     environment: CONFIG.environment,
     message:
       clubKonnect.isConfigured && flutterwave.isConfigured
         ? "All providers configured and reachable."
-        : "Set missing provider environment secrets on Cloud Run / Cloud Functions.",
+        : "Set missing provider environment secrets on your backend host.",
   });
+});
+
+// 8A. ADMIN: SYNC ALL PAST SETTLED FLUTTERWAVE DEPOSITS TO TIED USER ACCOUNTS
+app.post("/api/v1/admin/wallet/sync-all-deposits", requireAuth, requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const seenIds = new Set<string>();
+    let syncedCount = 0;
+    let alreadyCreditedCount = 0;
+    let unmatchedCount = 0;
+    let totalNewlyCreditedKobo = 0;
+
+    for (let page = 1; page <= 3; page += 1) {
+      const pageTxs = await flutterwave.listSuccessfulTransactions({ page });
+      if (pageTxs.length === 0) break;
+
+      for (const txItem of pageTxs) {
+        const txId = String(txItem.id || "").trim();
+        if (!txId || seenIds.has(txId)) continue;
+        seenIds.add(txId);
+
+        const verification = await flutterwave.verifyTransactionById(txId);
+        const verifiedData = (verification.data || {}) as Record<string, unknown>;
+        if (verification.status !== "success") continue;
+
+        const outcome = await creditVerifiedFlutterwaveTx(verifiedData);
+        if (!outcome.eligible) continue;
+        if (!outcome.matched) {
+          unmatchedCount += 1;
+        } else if (outcome.alreadyProcessed) {
+          alreadyCreditedCount += 1;
+        } else {
+          syncedCount += 1;
+          totalNewlyCreditedKobo += outcome.netCreditKobo;
+        }
+      }
+    }
+
+    const message =
+      syncedCount > 0
+        ? `Wired ${syncedCount} past Flutterwave deposit(s) totaling ₦${(totalNewlyCreditedKobo / 100).toFixed(2)} to tied wallets (${alreadyCreditedCount} already credited, ${unmatchedCount} unmatched).`
+        : `Checked ${seenIds.size} Flutterwave transaction(s): ${alreadyCreditedCount} already credited, ${unmatchedCount} unmatched.`;
+
+    res.json({
+      status: "success",
+      syncedCount,
+      alreadyCreditedCount,
+      totalNewlyCreditedKobo,
+      message,
+    });
+  } catch (err) {
+    res.status(400).json({ status: "error", message: (err as Error).message });
+  }
+});
+
+// 8A2. ADMIN: FUND SUPER ADMIN APP WALLET FROM FLUTTERWAVE MAIN NGN BALANCE
+app.post("/api/v1/admin/wallet/fund-from-main-balance", requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const uid = req.uid!;
+    const amountKobo = Number(req.body?.amountKobo || 0);
+    const rawIdem = typeof req.body?.idempotencyKey === "string" ? req.body.idempotencyKey.trim() : "";
+
+    if (!Number.isInteger(amountKobo) || amountKobo < 10000 || amountKobo > 1000000000) {
+      res.status(400).json({ status: "FAILED", message: "Amount must be between ₦100.00 and ₦10,000,000.00." });
+      return;
+    }
+
+    const userSnap = await db.collection("users").doc(uid).get();
+    if (!userSnap.exists) {
+      res.status(400).json({
+        status: "FAILED",
+        message: "Super Admin wallet profile not initialized yet. Tap the Storefront icon once to complete your wallet profile.",
+      });
+      return;
+    }
+
+    // Verify live available balance in Flutterwave Main NGN account before allocating to Super Admin wallet
+    const flwBal = await flutterwave.getNgnBalance();
+    const availableKobo = Math.round(flwBal.availableNaira * 100);
+    if (availableKobo < amountKobo) {
+      res.status(400).json({
+        status: "FAILED",
+        message: `Requested ₦${(amountKobo / 100).toFixed(2)} exceeds Flutterwave Main NGN available balance (₦${flwBal.availableNaira.toFixed(2)}).`,
+      });
+      return;
+    }
+
+    const reference = `MSGR-MAIN-${Date.now()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    const idempotencyKey = sanitizeDocId(
+      rawIdem || `admin_main_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
+      `admin_main_${Date.now()}`
+    );
+
+    const creditRes = await atomicCreditWallet({
+      userId: uid,
+      idempotencyKey,
+      reference,
+      amountKobo,
+      feeKobo: 0,
+      providerOrderId: "FLW_MAIN_NGN",
+      settlementAccountCode: "FLUTTERWAVE_MAIN_TREASURY",
+      narration: `Super Admin draw from Flutterwave Main NGN Balance (Available: ₦${flwBal.availableNaira.toFixed(2)})`,
+    });
+
+    res.json({
+      status: "SUCCESSFUL",
+      transactionId: reference,
+      reference,
+      message: creditRes.alreadyProcessed
+        ? "This main-balance transfer was already processed."
+        : `Credited ₦${(amountKobo / 100).toFixed(2)} from Flutterwave Main NGN Balance (Available: ₦${flwBal.availableNaira.toFixed(2)}) to your Super Admin wallet.`,
+    });
+  } catch (err) {
+    res.status(400).json({ status: "FAILED", message: (err as Error).message });
+  }
 });
 
 // 8B. ADMIN: RECONCILE ANY PENDING TRANSACTION
@@ -799,6 +1305,7 @@ app.post("/api/v1/admin/catalog/sync-clubkonnect", requireAuth, requireAdmin, as
     if (updatedCount > 0) {
       await batch.commit();
     }
+    invalidateLiveCatalogCache();
 
     res.json({
       status: "success",

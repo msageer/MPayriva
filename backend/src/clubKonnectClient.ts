@@ -25,7 +25,8 @@ export class ClubKonnectClient {
     endpoint: string,
     params: Record<string, string>,
     reference: string,
-    requireAuth = true
+    requireAuth = true,
+    silentFailure = false
   ): Promise<Record<string, unknown>> {
     if (requireAuth) this.assertConfigured();
     const url = new URL(`${BASE_URL}/${endpoint}`);
@@ -50,14 +51,16 @@ export class ClubKonnectClient {
       parsed = { raw: text.slice(0, 400) };
     }
 
-    await logProviderEvent({
-      provider: "CLUBKONNECT",
-      action: endpoint,
-      reference,
-      statusCode: String(res.status),
-      outcome: res.ok ? "SUCCESS" : "ERROR",
-      message: String(parsed.status || parsed.remark || parsed.message || res.statusText).slice(0, 300),
-    });
+    if (!silentFailure) {
+      await logProviderEvent({
+        provider: "CLUBKONNECT",
+        action: endpoint,
+        reference,
+        statusCode: String(res.status),
+        outcome: res.ok ? "SUCCESS" : "ERROR",
+        message: String(parsed.status || parsed.remark || parsed.message || res.statusText).slice(0, 300),
+      });
+    }
 
     if (!res.ok) {
       throw new Error(`ClubKonnect HTTP ${res.status}`);
@@ -69,22 +72,50 @@ export class ClubKonnectClient {
     return this.getJson("APIWalletBalanceV1.asp", {}, "HEALTH_CHECK");
   }
 
-  // --- LIVE CATALOG ENDPOINTS (ClubKonnect v2 JSON Feeds) ---
+  // --- LIVE CATALOG & AVAILABILITY ENDPOINTS (ClubKonnect v2 JSON Feeds) ---
+
+  async fetchAirtimeDiscounts(): Promise<Record<string, unknown>> {
+    return this.getJson("APIAirtimeDiscountV2.asp", {}, "CATALOG_AIRTIME", true, true);
+  }
 
   async fetchDataPlans(): Promise<Record<string, unknown>> {
-    return this.getJson("APIDatabundlePlansV2.asp", {}, "CATALOG_SYNC_DATA", true);
+    return this.getJson("APIDatabundlePlansV2.asp", {}, "CATALOG_DATA", true, true);
+  }
+
+  async fetchElectricityDiscos(): Promise<Record<string, unknown>> {
+    return this.getJson("APIElectricityDiscosV2.asp", {}, "CATALOG_ELECTRICITY", true, true);
   }
 
   async fetchCablePackages(): Promise<Record<string, unknown>> {
-    return this.getJson("APICableTVPackagesV2.asp", {}, "CATALOG_SYNC_CABLE", true);
+    return this.getJson("APICableTVPackagesV2.asp", {}, "CATALOG_CABLE", true, true);
   }
 
   async fetchWaecPackages(): Promise<Record<string, unknown>> {
-    return this.getJson("APIWAECPackagesV2.asp", {}, "CATALOG_SYNC_WAEC", true);
+    return this.getJson("APIWAECPackagesV2.asp", {}, "CATALOG_WAEC", true, true);
   }
 
   async fetchJambPackages(): Promise<Record<string, unknown>> {
-    return this.getJson("APIJAMBPackagesV2.asp", {}, "CATALOG_SYNC_JAMB", true);
+    return this.getJson("APIJAMBPackagesV2.asp", {}, "CATALOG_JAMB", true, true);
+  }
+
+  async fetchEpinDiscounts(): Promise<Record<string, unknown>> {
+    return this.getJson("APIEPINDiscountV2.asp", {}, "CATALOG_EPIN", true, true);
+  }
+
+  async fetchDataCardPlans(): Promise<Record<string, unknown>> {
+    return this.getJson("APIDataCardPlansV2.asp", {}, "CATALOG_DATACARD", true, true);
+  }
+
+  async fetchSmilePackages(): Promise<Record<string, unknown>> {
+    return this.getJson("APISmilePackagesV2.asp", {}, "CATALOG_SMILE", true, true);
+  }
+
+  async fetchSpectranetPackages(): Promise<Record<string, unknown>> {
+    return this.getJson("APISpectranetPackagesV2.asp", {}, "CATALOG_SPECTRANET", true, true);
+  }
+
+  async fetchBettingCompanies(): Promise<Record<string, unknown>> {
+    return this.getJson("APIBettingCompaniesV2.asp", {}, "CATALOG_BETTING", true, true);
   }
 
   // --- UTILITY FULFILLMENT ENDPOINTS ---
@@ -239,6 +270,104 @@ export class ClubKonnectClient {
         MobileNetwork: params.mobileNetwork,
         Value: String(params.valueNaira),
         Quantity: String(params.quantity),
+        RequestID: params.requestId,
+        CallBackURL: CONFIG.callbackBaseUrl ? `${CONFIG.callbackBaseUrl}/webhooks/clubkonnect` : "",
+      },
+      params.requestId
+    );
+  }
+
+  async buyDataCardEpin(params: {
+    mobileNetwork: string;
+    dataPlan: string;
+    quantity: number;
+    requestId: string;
+  }) {
+    return this.getJson(
+      "APIDataCardV1.asp",
+      {
+        MobileNetwork: params.mobileNetwork,
+        DataPlan: params.dataPlan,
+        Quantity: String(params.quantity),
+        RequestID: params.requestId,
+        CallBackURL: CONFIG.callbackBaseUrl ? `${CONFIG.callbackBaseUrl}/webhooks/clubkonnect` : "",
+      },
+      params.requestId
+    );
+  }
+
+  async verifySmileAccount(params: { mobileNetwork: string; mobileNumber: string }) {
+    return this.getJson(
+      "APIVerifySmileV1.asp",
+      {
+        MobileNetwork: params.mobileNetwork || "smile-direct",
+        MobileNumber: params.mobileNumber,
+      },
+      `VERIFY_SMILE_${params.mobileNumber}`
+    );
+  }
+
+  async buySmileData(params: {
+    mobileNetwork: string;
+    dataPlan: string;
+    mobileNumber: string;
+    requestId: string;
+  }) {
+    return this.getJson(
+      "APISmileV1.asp",
+      {
+        MobileNetwork: params.mobileNetwork || "smile-direct",
+        DataPlan: params.dataPlan,
+        MobileNumber: params.mobileNumber,
+        RequestID: params.requestId,
+        CallBackURL: CONFIG.callbackBaseUrl ? `${CONFIG.callbackBaseUrl}/webhooks/clubkonnect` : "",
+      },
+      params.requestId
+    );
+  }
+
+  async buySpectranetPin(params: {
+    mobileNetwork: string;
+    dataPlan: string;
+    mobileNumber: string;
+    requestId: string;
+  }) {
+    return this.getJson(
+      "APISpectranetV1.asp",
+      {
+        MobileNetwork: params.mobileNetwork || "spectranet",
+        DataPlan: params.dataPlan,
+        MobileNumber: params.mobileNumber,
+        RequestID: params.requestId,
+        CallBackURL: CONFIG.callbackBaseUrl ? `${CONFIG.callbackBaseUrl}/webhooks/clubkonnect` : "",
+      },
+      params.requestId
+    );
+  }
+
+  async verifyBettingCustomer(params: { bettingCompany: string; customerId: string }) {
+    return this.getJson(
+      "APIVerifyBettingV1.asp",
+      {
+        BettingCompany: params.bettingCompany,
+        CustomerID: params.customerId,
+      },
+      `VERIFY_BET_${params.customerId}`
+    );
+  }
+
+  async fundBettingWallet(params: {
+    bettingCompany: string;
+    customerId: string;
+    amountNaira: number;
+    requestId: string;
+  }) {
+    return this.getJson(
+      "APIBettingV1.asp",
+      {
+        BettingCompany: params.bettingCompany,
+        CustomerID: params.customerId,
+        Amount: String(params.amountNaira),
         RequestID: params.requestId,
         CallBackURL: CONFIG.callbackBaseUrl ? `${CONFIG.callbackBaseUrl}/webhooks/clubkonnect` : "",
       },

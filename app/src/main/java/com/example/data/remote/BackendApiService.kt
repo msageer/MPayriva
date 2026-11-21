@@ -18,6 +18,7 @@ import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
 
 @JsonClass(generateAdapter = true)
@@ -68,11 +69,33 @@ data class VerifySmartCardRequest(
 )
 
 @JsonClass(generateAdapter = true)
+data class VerifyBettingRequest(
+    val bettingCompany: String,
+    val customerId: String
+)
+
+@JsonClass(generateAdapter = true)
+data class VerifySmileRequest(
+    val mobileNumber: String
+)
+
+@JsonClass(generateAdapter = true)
 data class CustomerVerificationResponse(
     val verified: Boolean,
     val customerName: String? = null,
     val customerAddress: String? = null,
     val message: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class EpinVoucherDto(
+    val pin: String = "",
+    val serialNumber: String = "",
+    val batchNo: String = "",
+    val network: String = "",
+    val denomination: String = "",
+    val loadCode: String = "*311*PIN#",
+    val transactionDate: String = ""
 )
 
 @JsonClass(generateAdapter = true)
@@ -94,7 +117,53 @@ data class PurchaseResponse(
     val transactionId: String? = null,
     val reference: String? = null,
     val message: String,
-    val tokenOrPin: String? = null
+    val tokenOrPin: String? = null,
+    val serialNumber: String? = null,
+    val vouchers: List<EpinVoucherDto>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class LiveCatalogPlanDto(
+    val id: String = "",
+    val serviceType: String = "",
+    val providerCode: String = "",
+    val providerName: String = "",
+    val productCode: String = "",
+    val productName: String = "",
+    val categoryGroup: String = "",
+    val validity: String = "",
+    val dataVolume: String = "",
+    val providerCostKobo: Long = 0L,
+    val sellingPriceKobo: Long = 0L,
+    val feeKobo: Long = 0L,
+    val discountPercent: Double = 0.0,
+    val commissionPercent: Double = 0.0,
+    val available: Boolean = true
+)
+
+@JsonClass(generateAdapter = true)
+data class LiveServiceAvailabilityGroupDto(
+    val available: Boolean = false,
+    val statusMessage: String = "",
+    val items: List<LiveCatalogPlanDto> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class LiveStorefrontCatalogResponse(
+    val status: String = "success",
+    val fetchedAt: String = "",
+    val clubKonnectConnected: Boolean = false,
+    val totalPlans: Int = 0,
+    val airtime: List<LiveCatalogPlanDto> = emptyList(),
+    val data: List<LiveCatalogPlanDto> = emptyList(),
+    val electricity: List<LiveCatalogPlanDto> = emptyList(),
+    val cableTv: List<LiveCatalogPlanDto> = emptyList(),
+    val waec: List<LiveCatalogPlanDto> = emptyList(),
+    val jamb: List<LiveCatalogPlanDto> = emptyList(),
+    val rechargeCards: LiveServiceAvailabilityGroupDto = LiveServiceAvailabilityGroupDto(),
+    val dataCards: LiveServiceAvailabilityGroupDto = LiveServiceAvailabilityGroupDto(),
+    val broadband: List<LiveCatalogPlanDto> = emptyList(),
+    val betting: List<LiveCatalogPlanDto> = emptyList()
 )
 
 @JsonClass(generateAdapter = true)
@@ -102,8 +171,25 @@ data class ProviderHealthResponse(
     val clubKonnectConfigured: Boolean,
     val clubKonnectBalanceNaira: String? = null,
     val flutterwaveConfigured: Boolean,
+    val flutterwaveAvailableBalanceNaira: String? = null,
+    val flutterwaveLedgerBalanceNaira: String? = null,
     val environment: String,
     val message: String
+)
+
+@JsonClass(generateAdapter = true)
+data class DepositSyncResponse(
+    val status: String,
+    val syncedCount: Int = 0,
+    val alreadyCreditedCount: Int = 0,
+    val totalNewlyCreditedKobo: Long = 0L,
+    val message: String
+)
+
+@JsonClass(generateAdapter = true)
+data class AdminMainBalanceFundRequest(
+    val amountKobo: Long,
+    val idempotencyKey: String
 )
 
 @JsonClass(generateAdapter = true)
@@ -115,6 +201,12 @@ data class CatalogSyncResponse(
 )
 
 interface BackendApiService {
+    @GET("api/v1/catalog/live")
+    suspend fun getLiveStorefrontCatalog(
+        @Header("Authorization") bearerToken: String,
+        @Query("refresh") refresh: Boolean = false
+    ): Response<LiveStorefrontCatalogResponse>
+
     @POST("api/v1/wallet/virtual-account")
     suspend fun requestVirtualAccount(
         @Header("Authorization") bearerToken: String,
@@ -133,6 +225,11 @@ interface BackendApiService {
         @Body request: VerifyFundingRequest
     ): Response<PurchaseResponse>
 
+    @POST("api/v1/wallet/sync-deposits")
+    suspend fun syncWalletDeposits(
+        @Header("Authorization") bearerToken: String
+    ): Response<DepositSyncResponse>
+
     @POST("api/v1/verify/meter")
     suspend fun verifyElectricityMeter(
         @Header("Authorization") bearerToken: String,
@@ -143,6 +240,18 @@ interface BackendApiService {
     suspend fun verifyCableSmartCard(
         @Header("Authorization") bearerToken: String,
         @Body request: VerifySmartCardRequest
+    ): Response<CustomerVerificationResponse>
+
+    @POST("api/v1/verify/betting")
+    suspend fun verifyBettingCustomer(
+        @Header("Authorization") bearerToken: String,
+        @Body request: VerifyBettingRequest
+    ): Response<CustomerVerificationResponse>
+
+    @POST("api/v1/verify/smile")
+    suspend fun verifySmileAccount(
+        @Header("Authorization") bearerToken: String,
+        @Body request: VerifySmileRequest
     ): Response<CustomerVerificationResponse>
 
     @POST("api/v1/transactions/purchase")
@@ -161,6 +270,17 @@ interface BackendApiService {
     suspend fun getProviderHealth(
         @Header("Authorization") bearerToken: String
     ): Response<ProviderHealthResponse>
+
+    @POST("api/v1/admin/wallet/sync-all-deposits")
+    suspend fun adminSyncAllDeposits(
+        @Header("Authorization") bearerToken: String
+    ): Response<DepositSyncResponse>
+
+    @POST("api/v1/admin/wallet/fund-from-main-balance")
+    suspend fun adminFundFromMainBalance(
+        @Header("Authorization") bearerToken: String,
+        @Body request: AdminMainBalanceFundRequest
+    ): Response<PurchaseResponse>
 
     @POST("api/v1/admin/transactions/{reference}/reconcile")
     suspend fun adminReconcileTransaction(
@@ -242,8 +362,11 @@ class TrustedBackendClient(
 
     private fun requireApi(): BackendApiService =
         getOrBuildApi() ?: throw BackendNotDeployedException(
-            "Trusted backend URL is not configured yet. Deploy /backend to Cloud Run and enter its HTTPS URL in Admin Operations → Providers & API (or set BACKEND_BASE_URL in app/build.gradle.kts)."
+            "Trusted backend URL is not configured yet. Deploy /backend to Render and enter its HTTPS URL in Admin Operations → API & Providers."
         )
+
+    suspend fun getLiveStorefrontCatalog(refresh: Boolean = false): Result<LiveStorefrontCatalogResponse> =
+        executeCall { it.getLiveStorefrontCatalog(requireBearerToken(), refresh) }
 
     suspend fun requestVirtualAccount(bvn: String? = null): Result<VirtualAccountResponse> =
         executeCall { it.requestVirtualAccount(requireBearerToken(), VirtualAccountRequest(bvn)) }
@@ -254,11 +377,20 @@ class TrustedBackendClient(
     suspend fun verifyFunding(reference: String, flutterwaveTransactionId: String? = null): Result<PurchaseResponse> =
         executeCall { it.verifyFunding(requireBearerToken(), VerifyFundingRequest(reference, flutterwaveTransactionId)) }
 
+    suspend fun syncWalletDeposits(): Result<DepositSyncResponse> =
+        executeCall { it.syncWalletDeposits(requireBearerToken()) }
+
     suspend fun verifyElectricityMeter(electricCompany: String, meterNo: String, meterType: String): Result<CustomerVerificationResponse> =
         executeCall { it.verifyElectricityMeter(requireBearerToken(), VerifyMeterRequest(electricCompany, meterNo, meterType)) }
 
     suspend fun verifyCableSmartCard(cableTv: String, smartCardNo: String): Result<CustomerVerificationResponse> =
         executeCall { it.verifyCableSmartCard(requireBearerToken(), VerifySmartCardRequest(cableTv, smartCardNo)) }
+
+    suspend fun verifyBettingCustomer(bettingCompany: String, customerId: String): Result<CustomerVerificationResponse> =
+        executeCall { it.verifyBettingCustomer(requireBearerToken(), VerifyBettingRequest(bettingCompany, customerId)) }
+
+    suspend fun verifySmileAccount(mobileNumber: String): Result<CustomerVerificationResponse> =
+        executeCall { it.verifySmileAccount(requireBearerToken(), VerifySmileRequest(mobileNumber)) }
 
     suspend fun submitPurchase(request: PurchaseRequest): Result<PurchaseResponse> =
         executeCall { it.submitPurchase(requireBearerToken(), request) }
@@ -268,6 +400,17 @@ class TrustedBackendClient(
 
     suspend fun getProviderHealth(): Result<ProviderHealthResponse> =
         executeCall { it.getProviderHealth(requireBearerToken()) }
+
+    suspend fun adminSyncAllDeposits(): Result<DepositSyncResponse> =
+        executeCall { it.adminSyncAllDeposits(requireBearerToken()) }
+
+    suspend fun adminFundFromMainBalance(amountKobo: Long, idempotencyKey: String): Result<PurchaseResponse> =
+        executeCall {
+            it.adminFundFromMainBalance(
+                requireBearerToken(),
+                AdminMainBalanceFundRequest(amountKobo, idempotencyKey)
+            )
+        }
 
     suspend fun adminReconcileTransaction(reference: String): Result<PurchaseResponse> =
         executeCall { it.adminReconcileTransaction(requireBearerToken(), reference) }
@@ -282,8 +425,8 @@ class TrustedBackendClient(
             if (response.isSuccessful && body != null) {
                 Result.success(body)
             } else {
-                val rawErr = response.errorBody()?.string()?.take(500).orEmpty()
-                val parsedMessage = extractJsonErrorMessage(rawErr)
+                val rawErr = response.errorBody()?.string()?.take(600).orEmpty()
+                val parsedMessage = extractJsonErrorMessage(rawErr, response.code())
                 Result.failure(
                     IllegalStateException(
                         parsedMessage ?: "Server returned HTTP ${response.code()}"
@@ -303,15 +446,29 @@ class TrustedBackendClient(
             return trimmed.startsWith("https://") || trimmed.startsWith("http://10.0.2.2")
         }
 
-        fun extractJsonErrorMessage(rawBody: String): String? {
-            if (rawBody.isBlank()) return null
+        fun extractJsonErrorMessage(rawBody: String, statusCode: Int = 0): String? {
+            val trimmed = rawBody.trim()
+            if (trimmed.isBlank()) return null
+
+            // Friendly translation when Express / Render returns an HTML error page instead of JSON
+            if (trimmed.startsWith("<!DOCTYPE", ignoreCase = true) || trimmed.startsWith("<html", ignoreCase = true)) {
+                return when {
+                    statusCode == 404 || trimmed.contains("Cannot POST", ignoreCase = true) || trimmed.contains("Cannot GET", ignoreCase = true) ->
+                        "Backend endpoint not live yet (HTTP 404). Push the latest /backend code to GitHub so Render redeploys your server."
+                    statusCode in 502..504 ->
+                        "Backend server is waking up or redeploying on Render (HTTP $statusCode). Wait 20–30 seconds and try again."
+                    else ->
+                        "Backend returned an unexpected HTML response (HTTP ${if (statusCode > 0) statusCode else 500}). Please verify your Render deployment."
+                }
+            }
+
             return try {
-                val obj = JSONObject(rawBody)
+                val obj = JSONObject(trimmed)
                 obj.optString("message").takeIf { it.isNotBlank() }
                     ?: obj.optString("error").takeIf { it.isNotBlank() }
-                    ?: rawBody.take(240)
+                    ?: trimmed.take(240)
             } catch (_: Exception) {
-                rawBody.take(240)
+                trimmed.take(240)
             }
         }
     }

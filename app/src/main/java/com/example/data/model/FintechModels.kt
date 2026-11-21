@@ -17,8 +17,12 @@ enum class TransactionType(val label: String) {
     ELECTRICITY("Electricity"),
     CABLE_TV("Cable TV"),
     RECHARGE_CARD("Recharge Card"),
+    DATA_CARD("Data Card"),
     WAEC_PIN("WAEC PIN"),
     JAMB_PIN("JAMB PIN"),
+    SMILE("Smile Broadband"),
+    SPECTRANET("Spectranet"),
+    BETTING("Betting"),
     REFUND("Refund");
 
     companion object {
@@ -44,11 +48,15 @@ enum class TransactionStatus(val label: String) {
 enum class ServiceType(val label: String) {
     AIRTIME("Airtime"),
     DATA("Data Plans"),
+    RECHARGE_CARD("Recharge Cards"),
+    DATA_CARD("Data Cards"),
     ELECTRICITY("Electricity"),
     CABLE_TV("Cable TV"),
-    RECHARGE_CARD("Recharge Cards"),
     WAEC_PIN("WAEC PIN"),
-    JAMB_PIN("JAMB PIN");
+    JAMB_PIN("JAMB PIN"),
+    SMILE("Broadband"),
+    SPECTRANET("Spectranet"),
+    BETTING("Betting");
 
     companion object {
         fun safeValueOf(raw: String): ServiceType =
@@ -136,6 +144,18 @@ data class SecurityPinRecord(
 
 @Keep
 @IgnoreExtraProperties
+data class EpinVoucherRecord(
+    val pin: String = "",
+    val serialNumber: String = "",
+    val batchNo: String = "",
+    val network: String = "",
+    val denomination: String = "",
+    val loadCode: String = "*311*PIN#",
+    val transactionDate: String = ""
+)
+
+@Keep
+@IgnoreExtraProperties
 data class TransactionRecord(
     @DocumentId val id: String = "",
     val userId: String = "",
@@ -157,6 +177,7 @@ data class TransactionRecord(
     val totalAmountKobo: Long = 0L,
     val tokenOrPin: String? = null,
     val serialNumber: String? = null,
+    val vouchers: List<EpinVoucherRecord> = emptyList(),
     val failureReason: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
@@ -164,6 +185,18 @@ data class TransactionRecord(
     fun resolvedType(): TransactionType = TransactionType.safeValueOf(type)
     fun resolvedStatus(): TransactionStatus = TransactionStatus.safeValueOf(status)
     fun isCredit(): Boolean = resolvedType() == TransactionType.WALLET_FUNDING || resolvedType() == TransactionType.REFUND
+
+    fun hasPrintableVouchers(): Boolean =
+        vouchers.isNotEmpty() || (
+            !tokenOrPin.isNullOrBlank() && resolvedType() in setOf(
+                TransactionType.RECHARGE_CARD,
+                TransactionType.DATA_CARD,
+                TransactionType.WAEC_PIN,
+                TransactionType.JAMB_PIN,
+                TransactionType.ELECTRICITY,
+                TransactionType.SPECTRANET
+            )
+        )
 }
 
 @Keep

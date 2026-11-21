@@ -116,3 +116,71 @@ test("ClubKonnect status classifier keeps uncertain/pending responses PENDING an
   const cancelled = classifyClubKonnectStatus({ status: "ORDER_CANCELLED", remark: "Invalid number" });
   assert.equal(cancelled.resolution, "FAILED");
 });
+
+test("ClubKonnect TXN_EPIN array is parsed into printable vouchers and marked SUCCESSFUL", () => {
+  const res = classifyClubKonnectStatus({
+    ORDER_ID: "EPIN-9901",
+    TXN_EPIN: [
+      {
+        transactionid: "TX1",
+        transactiondate: "2026-11-21",
+        mobilenetwork: "MTN",
+        amount: "100",
+        batchno: "B-100",
+        sno: "SN-0001",
+        pin: "1234567890123456",
+      },
+      {
+        transactionid: "TX2",
+        transactiondate: "2026-11-21",
+        mobilenetwork: "MTN",
+        amount: "100",
+        batchno: "B-100",
+        sno: "SN-0002",
+        pin: "6543210987654321",
+      },
+    ],
+  });
+
+  assert.equal(res.resolution, "SUCCESSFUL");
+  assert.equal(res.orderId, "EPIN-9901");
+  assert.equal(res.vouchers.length, 2);
+  assert.equal(res.vouchers[0].pin, "1234567890123456");
+  assert.equal(res.vouchers[0].serialNumber, "SN-0001");
+  assert.equal(res.vouchers[0].loadCode, "*311*PIN#");
+  assert.equal(res.serialNumber, "SN-0001");
+});
+
+test("DATA_CARD and BETTING compute authorized pricing cleanly", () => {
+  const dc = computeAuthorizedPurchasePricing({
+    serviceType: "DATA_CARD",
+    providerCode: "01",
+    productCode: "1500",
+    requestedAmountKobo: 100,
+    quantity: 3,
+    catalog: {
+      productName: "MTN 1.5GB Data Card",
+      providerCostKobo: 32000,
+      sellingPriceKobo: 36000,
+      feeKobo: 0,
+    },
+  });
+  assert.equal(dc.quantity, 3);
+  assert.equal(dc.totalDebitKobo, 108000);
+  assert.equal(dc.grossMarginKobo, 12000);
+
+  const bet = computeAuthorizedPurchasePricing({
+    serviceType: "BETTING",
+    providerCode: "Bet9ja",
+    productCode: "Bet9ja",
+    requestedAmountKobo: 200000,
+    catalog: {
+      productName: "Bet9ja Wallet",
+      feeKobo: 5000,
+      commissionPercent: 0.5,
+    },
+  });
+  assert.equal(bet.faceValueNaira, 2000);
+  assert.equal(bet.totalDebitKobo, 205000);
+});
+

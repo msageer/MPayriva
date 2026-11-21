@@ -1,10 +1,14 @@
 package com.example
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -35,6 +39,7 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +64,7 @@ import com.example.data.model.ServiceType
 import com.example.data.model.TransactionRecord
 import com.example.data.remote.TrustedBackendClient
 import com.example.data.repository.FintechRepository
+import com.example.notifications.FintechNotificationManager
 import com.example.ui.components.InlineStatusBanner
 import com.example.ui.screens.AccountRegistrationScreen
 import com.example.ui.screens.AdminDashboardScreen
@@ -82,6 +88,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        FintechNotificationManager.ensureChannel(applicationContext)
         enableEdgeToEdge()
         setContent {
             MSageerFintechTheme {
@@ -98,7 +105,7 @@ private enum class MainTab(
 ) {
     HOME("Home", Icons.Filled.Home, Icons.Outlined.Home),
     SERVICES("Services", Icons.Filled.GridView, Icons.Outlined.GridView),
-    TRANSACTIONS("Transactions", Icons.Filled.ReceiptLong, Icons.Outlined.ReceiptLong),
+    TRANSACTIONS("History", Icons.Filled.ReceiptLong, Icons.Outlined.ReceiptLong),
     WALLET("Wallet", Icons.Filled.AccountBalanceWallet, Icons.Outlined.AccountBalanceWallet),
     PROFILE("Profile", Icons.Filled.Person, Icons.Outlined.Person)
 }
@@ -170,8 +177,57 @@ private fun AuthenticatedFintechShell(
     val isSubmitting by fintechViewModel.isSubmitting.collectAsStateWithLifecycle()
     val verifiedCustomer by fintechViewModel.verifiedCustomer.collectAsStateWithLifecycle()
     val lastCardCheckout by fintechViewModel.lastCardCheckout.collectAsStateWithLifecycle()
+    val liveCatalogState by fintechViewModel.liveCatalogState.collectAsStateWithLifecycle()
+    val lastVoucherReceipt by fintechViewModel.lastVoucherReceipt.collectAsStateWithLifecycle()
 
     var adminViewingCustomerApp by remember(currentUserId) { mutableStateOf(false) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* Permission result handled gracefully by FintechNotificationManager */ }
+
+    LaunchedEffect(currentUserId) {
+        FintechNotificationManager.ensureChannel(context.applicationContext)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !FintechNotificationManager.hasNotificationPermission(context)
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    val loadedProfile = (profileState as? UiState.Success)?.data
+    LaunchedEffect(currentUserId, loadedProfile != null) {
+        if (loadedProfile != null) {
+            val token = FintechNotificationManager.fetchCurrentFcmToken()
+            if (!token.isNullOrBlank() && token != loadedProfile.fcmToken) {
+                fintechViewModel.syncFcmToken(token)
+            }
+        }
+    }
+
+    var notificationsInitialized by remember(currentUserId) { mutableStateOf(false) }
+    val seenNotificationIds = remember(currentUserId) { mutableSetOf<String>() }
+    LaunchedEffect(notificationsState) {
+        val currentList = (notificationsState as? UiState.Success)?.data ?: return@LaunchedEffect
+        if (!notificationsInitialized) {
+            currentList.forEach { n ->
+                seenNotificationIds.add(n.id.ifBlank { "${n.reference}_${n.title}_${n.createdAt?.seconds ?: 0L}" })
+            }
+            notificationsInitialized = true
+        } else {
+            currentList.forEach { n ->
+                val notifKey = n.id.ifBlank { "${n.reference}_${n.title}_${n.createdAt?.seconds ?: 0L}" }
+                if (seenNotificationIds.add(notifKey) && !n.read) {
+                    FintechNotificationManager.showTransactionNotification(
+                        context = context.applicationContext,
+                        title = n.title,
+                        body = n.body,
+                        notificationKey = notifKey
+                    )
+                }
+            }
+        }
+    }
 
     val performSignOut: () -> Unit = {
         signOutUser(credentialManager = credentialManager, scope = scope)
@@ -426,16 +482,21 @@ private fun AuthenticatedFintechShell(
                                                     initialService = selectedService,
                                                     profile = profile,
                                                     catalog = catalog,
+                                                    liveCatalogState = liveCatalogState,
                                                     verifiedCustomer = verifiedCustomer,
                                                     isSubmitting = isSubmitting,
+                                                    onRefreshLiveCatalog = { fintechViewModel.refreshLiveCatalog(force = true) },
                                                     onClearVerification = fintechViewModel::clearVerification,
                                                     onVerifyMeter = fintechViewModel::verifyElectricityMeter,
                                                     onVerifySmartCard = fintechViewModel::verifyCableSmartCard,
-                                                    onAuthorizePurchase = { svcType, provCode, prodCode, rec, amt, mType, qty, pin, idemKey, done ->
+                                                    onVerifyBetting = fintechViewModel::verifyBettingCustomer,
+                                                    onVerifySmile = fintechViewModel::verifySmileAccount,
+                                                    onAuthorizePurchase = { svcType, provCode, prodCode, prodTitle, rec, amt, mType, qty, pin, idemKey, done ->
                                                         fintechViewModel.authorizeAndSubmitPurchase(
                                                             serviceType = svcType,
                                                             providerCode = provCode,
                                                             productCode = prodCode,
+                                                            productTitle = prodTitle,
                                                             recipient = rec,
                                                             amountKobo = amt,
                                                             meterType = mType,
@@ -458,6 +519,7 @@ private fun AuthenticatedFintechShell(
                                                     lastCardCheckout = lastCardCheckout,
                                                     isSubmitting = isSubmitting,
                                                     onRequestVirtualAccount = fintechViewModel::requestDedicatedVirtualAccount,
+                                                    onSyncBankDeposits = fintechViewModel::syncBankDeposits,
                                                     onInitiateCardFunding = fintechViewModel::initiateCardWalletFunding,
                                                     onVerifyCardFunding = fintechViewModel::verifyCardFunding,
                                                     onClearCardCheckout = fintechViewModel::clearCardCheckout
@@ -485,14 +547,20 @@ private fun AuthenticatedFintechShell(
                             }
                         }
 
-                        selectedReceiptTx?.let { tx ->
+                        val activeReceiptTx = selectedReceiptTx ?: lastVoucherReceipt
+                        activeReceiptTx?.let { tx ->
                             TransactionReceiptDialog(
                                 transaction = tx,
                                 isSubmitting = isSubmitting,
-                                onDismiss = { selectedReceiptTx = null },
+                                businessHeader = profile.displayTitle(),
+                                onDismiss = {
+                                    selectedReceiptTx = null
+                                    fintechViewModel.dismissLastVoucherReceipt()
+                                },
                                 onRequeryStatus = fintechViewModel::requeryTransaction,
                                 onReportIssue = { ref ->
                                     selectedReceiptTx = null
+                                    fintechViewModel.dismissLastVoucherReceipt()
                                     overlayRoute = OverlayRoute.Support(prefilledReference = ref)
                                 }
                             )

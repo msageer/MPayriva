@@ -17,6 +17,7 @@ export async function atomicCreditWallet(params: {
   feeKobo: number;
   providerOrderId?: string;
   narration: string;
+  settlementAccountCode?: string;
 }) {
   if (params.amountKobo <= 0) throw new Error("Credit amount must be positive.");
   const netCreditKobo = Math.max(0, params.amountKobo - params.feeKobo);
@@ -53,7 +54,7 @@ export async function atomicCreditWallet(params: {
       type: "WALLET_FUNDING",
       status: "SUCCESSFUL",
       provider: "FLUTTERWAVE",
-      providerCode: "FLW_NGN",
+      providerCode: params.settlementAccountCode || "FLW_NGN",
       providerOrderId: params.providerOrderId || null,
       recipient: userSnap.data()?.email || params.userId,
       productName: "NGN Wallet Funding",
@@ -80,13 +81,13 @@ export async function atomicCreditWallet(params: {
       createdAt: FieldValue.serverTimestamp(),
     });
 
-    // Double-entry 2: DEBIT Flutterwave Settlement Asset
+    // Double-entry 2: DEBIT Flutterwave Settlement / Main Treasury Asset
     tx.set(db.collection("ledgerEntries").doc(), {
       userId: params.userId,
       transactionId: params.reference,
       reference: params.reference,
       entryType: "DEBIT",
-      accountCode: "FLUTTERWAVE_SETTLEMENT",
+      accountCode: params.settlementAccountCode || "FLUTTERWAVE_SETTLEMENT",
       amountKobo: netCreditKobo,
       balanceBeforeKobo: balanceBefore,
       balanceAfterKobo: balanceAfter,

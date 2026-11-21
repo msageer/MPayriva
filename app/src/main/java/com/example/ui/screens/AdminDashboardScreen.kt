@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.HealthAndSafety
@@ -511,8 +512,11 @@ fun AdminDashboardScreen(
                                     }
                                     Text(
                                         text = providerHealth?.let {
-                                            "Env: ${it.environment}\nClubKonnect Configured: ${it.clubKonnectConfigured} (Balance: ${it.clubKonnectBalanceNaira ?: "N/A"})\nFlutterwave Configured: ${it.flutterwaveConfigured}"
-                                        } ?: "Query live backend credentials, ClubKonnect wallet balance (APIWalletBalanceV1), or sync live ClubKonnect data/cable/exam bundle costs.",
+                                            "Env: ${it.environment}\n" +
+                                                "ClubKonnect: ${if (it.clubKonnectConfigured) "Configured" else "Missing"} (Balance: ₦${it.clubKonnectBalanceNaira ?: "N/A"})\n" +
+                                                "Flutterwave: ${if (it.flutterwaveConfigured) "Configured" else "Missing"}\n" +
+                                                "Flutterwave Main NGN — Available: ₦${it.flutterwaveAvailableBalanceNaira ?: "N/A"} | Ledger: ₦${it.flutterwaveLedgerBalanceNaira ?: "N/A"}"
+                                        } ?: "Query live ClubKonnect & Flutterwave Main NGN balances, wire past funded bank transfers to tied wallets, or sync ClubKonnect bundle costs.",
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     OutlinedButton(
@@ -524,7 +528,21 @@ fun AdminDashboardScreen(
                                     ) {
                                         Icon(Icons.Filled.Refresh, contentDescription = "Check health", modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Query Backend Provider Health")
+                                        Text("Query Live Provider Balances")
+                                    }
+                                    Button(
+                                        onClick = { adminViewModel.syncAllPastFlutterwaveDeposits() },
+                                        enabled = !isBusy,
+                                        shape = RoundedCornerShape(14.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .testTag("admin_sync_all_deposits_button")
+                                    ) {
+                                        Icon(Icons.Filled.CloudSync, contentDescription = "Sync past deposits", modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Sync Past Flutterwave Deposits", fontWeight = FontWeight.Bold)
                                     }
                                     OutlinedButton(
                                         onClick = { adminViewModel.syncLiveClubKonnectCatalog() },
@@ -536,6 +554,81 @@ fun AdminDashboardScreen(
                                         Icon(Icons.Filled.CloudSync, contentDescription = "Sync ClubKonnect", modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text("Sync Live ClubKonnect Catalog Costs")
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2B. Super Admin: Fund Admin Wallet from Flutterwave Main NGN Account
+                        item {
+                            var mainFundNaira by remember { mutableStateOf("5000") }
+                            Card(
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            Icons.Filled.AccountBalanceWallet,
+                                            contentDescription = "Flutterwave main balance",
+                                            tint = MaterialTheme.colorScheme.secondary
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            "Super Admin Main Account Funding",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Text(
+                                        text = "Draw from your live Flutterwave Main NGN Available Balance into your Super Admin app wallet to execute utility transactions directly. Backend verifies available NGN balance before crediting.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    if (!providerHealth?.flutterwaveAvailableBalanceNaira.isNullOrBlank()) {
+                                        Text(
+                                            text = "Live Flutterwave Main Available: ₦${providerHealth?.flutterwaveAvailableBalanceNaira}",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
+                                            color = StatusSuccess,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    OutlinedTextField(
+                                        value = mainFundNaira,
+                                        onValueChange = { mainFundNaira = it.filter { c -> c.isDigit() } },
+                                        label = { Text("Amount to Wire to Admin Wallet (₦)") },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("admin_main_fund_amount_input")
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        listOf("5000", "10000", "25000", "50000").forEach { preset ->
+                                            FilterChip(
+                                                selected = mainFundNaira == preset,
+                                                onClick = { mainFundNaira = preset },
+                                                label = { Text("₦$preset") }
+                                            )
+                                        }
+                                    }
+                                    Button(
+                                        onClick = {
+                                            val kobo = CurrencyFormatter.nairaToKobo(mainFundNaira) ?: 0L
+                                            adminViewModel.fundAdminWalletFromMainBalance(kobo)
+                                        },
+                                        enabled = !isBusy,
+                                        shape = RoundedCornerShape(14.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .testTag("admin_fund_from_main_button")
+                                    ) {
+                                        Text("Wire From Main Account to Admin Wallet", fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }

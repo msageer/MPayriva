@@ -133,10 +133,29 @@ export async function notifyCustomer(params: {
       await messagingAdmin.send({
         token: fcmToken,
         notification: { title: params.title, body: params.body },
-        data: { type: params.type, reference: params.reference || "" },
+        data: {
+          type: params.type,
+          reference: params.reference || "",
+          title: params.title,
+          body: params.body,
+        },
+        android: {
+          priority: "high",
+          notification: {
+            channelId: "msageer_transactions",
+            sound: "default",
+          },
+        },
       });
-    } catch {
-      // Non-fatal: in-app Firestore notification already persisted
+    } catch (fcmErr) {
+      await logProviderEvent({
+        provider: "SYSTEM",
+        action: "FCM_PUSH",
+        reference: params.reference || params.userId,
+        statusCode: "FCM_ERR",
+        outcome: "ERROR",
+        message: String((fcmErr as Error).message || "FCM push failed").slice(0, 280),
+      });
     }
   }
 }

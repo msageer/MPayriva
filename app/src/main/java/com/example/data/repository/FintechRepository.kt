@@ -214,6 +214,30 @@ class FintechRepository(
         }
     }
 
+    suspend fun saveFcmToken(token: String): Result<Unit> {
+        val uid = auth.currentUser?.uid ?: return Result.success(Unit)
+        val cleanToken = token.trim()
+        if (cleanToken.isEmpty() || cleanToken.length > 300) return Result.success(Unit)
+        val docRef = db.collection("users").document(uid)
+        return try {
+            val snap = docRef.get().await()
+            if (!snap.exists()) return Result.success(Unit)
+            if (snap.getString("fcmToken") == cleanToken) return Result.success(Unit)
+            docRef.update(
+                mapOf(
+                    "fcmToken" to cleanToken,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
     suspend fun verifyTransactionPinLocally(enteredPin: String): Result<Boolean> {
         val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Not signed in"))
         val path = "users/$uid/security/pin"
