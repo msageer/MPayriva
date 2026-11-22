@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { authAdmin, CONFIG, db, hashPin, logProviderEvent, notifyCustomer, timingSafeEqualStr } from "./config";
 import { ClubKonnectClient } from "./clubKonnectClient";
+import { AlrahuzDataClient } from "./alrahuzDataClient";
 import { FlutterwaveClient } from "./flutterwaveClient";
 import {
   atomicCreateDirectApiPurchase,
@@ -10,13 +11,23 @@ import {
   atomicReserveAndCreatePurchase,
   atomicReverseConfirmedFailure,
 } from "./ledgerEngine";
-import { classifyClubKonnectStatus, computeAuthorizedPurchasePricing } from "./pricingEngine";
+import {
+  classifyAlrahuzStatus,
+  classifyClubKonnectStatus,
+  computeAuthorizedPurchasePricing,
+} from "./pricingEngine";
 import {
   findAuthorizedLiveProduct,
-  getLiveStorefrontCatalog,
+  getMultiProviderCatalogBundle,
   invalidateLiveCatalogCache,
   projectCatalogForSuperAdminDirectApi,
 } from "./liveCatalogEngine";
+import {
+  ApiProviderId,
+  getProviderControls,
+  isProviderEnabled,
+  selectActiveProviderForService,
+} from "./providerControls";
 import { registerAdminTreasuryAndPricingRoutes } from "./adminRoutes";
 
 const app = express();
@@ -33,6 +44,7 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
 });
 
 const clubKonnect = new ClubKonnectClient();
+const alrahuzData = new AlrahuzDataClient();
 const flutterwave = new FlutterwaveClient();
 
 interface AuthenticatedRequest extends Request {
@@ -130,11 +142,27 @@ async function reconcileTransactionWithClubKonnect(reference: string) {
     };
   }
 
-  const queryRes = await clubKonnect.queryTransactionStatus({
-    orderId: txData.providerOrderId ? String(txData.providerOrderId) : null,
-    requestId: reference,
-  });
-  const classified = classifyClubKonnectStatus(queryRes, txData.type === "DATA_CARD", true);
+  const txProvider = String(txData.provider || "CLUBKONNECT").toUpperCase();
+  let classified;
+  if (txProvider === "ALRAHUZDATA") {
+    const orderId = txData.providerOrderId ? String(txData.providerOrderId) : "";
+    if (!orderId) {
+      return {
+        notFound: false as const,
+        status: "PENDING",
+        tokenOrPin: null,
+        message: "Awaiting AlrahuzData order reference for reconciliation.",
+      };
+    }
+    const queryRes = await alrahuzData.queryTransactionStatus(String(txData.type || "DATA"), orderId, reference);
+    classified = classifyAlrahuzStatus(queryRes, txData.type === "DATA_CARD", true);
+  } else {
+    const queryRes = await clubKonnect.queryTransactionStatus({
+      orderId: txData.providerOrderId ? String(txData.providerOrderId) : null,
+      requestId: reference,
+    });
+    classified = classifyClubKonnectStatus(queryRes, txData.type === "DATA_CARD", true);
+  }
 
   if (classified.resolution === "SUCCESSFUL") {
     await txRef.update({
@@ -201,27 +229,42 @@ app.get("/payment-complete", (_req: Request, res: Response) => {
   );
 });
 
-// 0B. LIVE STOREFRONT CATALOG (Fetches all live ClubKonnect services + e-PIN/Data Card stock availability)
+// 0B. LIVE STOREFRONT CATALOG (Fetches all live routed multi-provider services + e-PIN/Data Card stock availability)
 app.get("/api/v1/catalog/live", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const forceRefresh = req.query.refresh === "true" || req.query.refresh === "1";
-    const liveCatalog = await getLiveStorefrontCatalog(clubKonnect, forceRefresh);
+    const bundle = await getMultiProviderCatalogBundle(clubKonnect, alrahuzData, forceRefresh);
+    const liveCatalog = bundle.routedCatalog;
 
-    // Super Admin (msagirgroup@gmail.com) receives exact direct wholesale API rates & live API balance
+    // Super Admin (msagirgroup@gmail.com) receives exact direct wholesale API rates & combined live API balance
     if (req.isSuperAdmin === true) {
-      let liveApiBalanceNaira: string | null = null;
-      if (clubKonnect.isConfigured) {
+      let totalApiBalanceNaira = 0;
+      let anyBalanceRead = false;
+      if (clubKonnect.isConfigured && isProviderEnabled(bundle.providerControls, "CLUBKONNECT")) {
         try {
           const balRes = await clubKonnect.getWalletBalance();
           const rawBal = String(balRes.balance ?? balRes.Balance ?? balRes.walletbalance ?? "").replace(/[^0-9.]/g, "");
           const parsedBal = Number(rawBal);
           if (rawBal && Number.isFinite(parsedBal)) {
-            liveApiBalanceNaira = parsedBal.toFixed(2);
+            totalApiBalanceNaira += parsedBal;
+            anyBalanceRead = true;
           }
         } catch {
-          liveApiBalanceNaira = null;
+          // Non-fatal
         }
       }
+      if (alrahuzData.isConfigured && isProviderEnabled(bundle.providerControls, "ALRAHUZDATA")) {
+        try {
+          const alrBal = await alrahuzData.getWalletBalance();
+          if (Number.isFinite(alrBal.balanceNaira)) {
+            totalApiBalanceNaira += alrBal.balanceNaira;
+            anyBalanceRead = true;
+          }
+        } catch {
+          // Non-fatal
+        }
+      }
+      const liveApiBalanceNaira = anyBalanceRead ? totalApiBalanceNaira.toFixed(2) : null;
       res.json(projectCatalogForSuperAdminDirectApi(liveCatalog, liveApiBalanceNaira));
       return;
     }
@@ -406,7 +449,7 @@ app.post("/api/v1/wallet/verify-funding", requireAuth, async (req: Authenticated
   }
 });
 
-// 3. VERIFY ELECTRICITY METER (ClubKonnect)
+// 3. VERIFY ELECTRICITY METER (Uses Active Enabled Provider)
 app.post("/api/v1/verify/meter", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const electricCompany = String(req.body?.electricCompany || "").trim();
@@ -414,6 +457,35 @@ app.post("/api/v1/verify/meter", requireAuth, async (req: AuthenticatedRequest, 
     const meterType = String(req.body?.meterType || "prepaid").trim();
     if (!electricCompany || meterNo.length < 6) {
       res.status(400).json({ verified: false, message: "Enter a valid DisCo and meter number." });
+      return;
+    }
+
+    const controls = await getProviderControls();
+    const configured: ApiProviderId[] = [
+      ...(clubKonnect.isConfigured ? (["CLUBKONNECT"] as ApiProviderId[]) : []),
+      ...(alrahuzData.isConfigured ? (["ALRAHUZDATA"] as ApiProviderId[]) : []),
+    ];
+    const activeProvider = selectActiveProviderForService({
+      controls,
+      serviceType: "ELECTRICITY",
+      configuredProviders: configured,
+    });
+
+    if (!activeProvider) {
+      res.status(503).json({ verified: false, message: "Electricity verification is temporarily unavailable." });
+      return;
+    }
+
+    if (activeProvider === "ALRAHUZDATA") {
+      const result = await alrahuzData.verifyElectricityMeter({ electricCompany, meterNo, meterType });
+      const name = String(result.name || result.customer_name || result.Customer_Name || "").trim();
+      const valid = Boolean(name && !name.toUpperCase().includes("INVALID") && !result.invalid);
+      res.json({
+        verified: valid,
+        customerName: valid ? name : null,
+        customerAddress: result.address ? String(result.address) : null,
+        message: valid ? "Meter verified" : "Unable to verify meter number",
+      });
       return;
     }
 
@@ -435,13 +507,41 @@ app.post("/api/v1/verify/meter", requireAuth, async (req: AuthenticatedRequest, 
   }
 });
 
-// 4. VERIFY CABLE SMARTCARD (ClubKonnect)
+// 4. VERIFY CABLE SMARTCARD (Uses Active Enabled Provider)
 app.post("/api/v1/verify/smartcard", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const cableTv = String(req.body?.cableTv || "").trim();
     const smartCardNo = String(req.body?.smartCardNo || "").trim();
     if (!cableTv || smartCardNo.length < 6) {
       res.status(400).json({ verified: false, message: "Enter a valid Cable provider and smartcard/IUC number." });
+      return;
+    }
+
+    const controls = await getProviderControls();
+    const configured: ApiProviderId[] = [
+      ...(clubKonnect.isConfigured ? (["CLUBKONNECT"] as ApiProviderId[]) : []),
+      ...(alrahuzData.isConfigured ? (["ALRAHUZDATA"] as ApiProviderId[]) : []),
+    ];
+    const activeProvider = selectActiveProviderForService({
+      controls,
+      serviceType: "CABLE_TV",
+      configuredProviders: configured,
+    });
+
+    if (!activeProvider) {
+      res.status(503).json({ verified: false, message: "Smartcard verification is temporarily unavailable." });
+      return;
+    }
+
+    if (activeProvider === "ALRAHUZDATA") {
+      const result = await alrahuzData.verifyCableSmartCard({ cableTv, smartCardNo });
+      const name = String(result.name || result.customer_name || result.Customer_Name || "").trim();
+      const valid = Boolean(name && !name.toUpperCase().includes("INVALID") && !result.invalid);
+      res.json({
+        verified: valid,
+        customerName: valid ? name : null,
+        message: valid ? "Smartcard verified" : "Unable to verify smartcard",
+      });
       return;
     }
 
@@ -580,17 +680,41 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
       }
     }
 
-    // Check live catalog & stock availability
-    const liveLookup = await findAuthorizedLiveProduct(
-      clubKonnect,
-      normalizedService,
-      normalizedProvider,
-      normalizedProduct
-    );
+    // Check multi-provider live catalog, provider ON/OFF controls, and stock availability
+    const [providerControls, liveLookup] = await Promise.all([
+      getProviderControls(),
+      findAuthorizedLiveProduct(
+        clubKonnect,
+        normalizedService,
+        normalizedProvider,
+        normalizedProduct,
+        alrahuzData
+      ),
+    ]);
     if (!liveLookup.available) {
       res.status(400).json({
         status: "FAILED",
         message: liveLookup.unavailableReason || "This service is currently unavailable. Please try again shortly.",
+      });
+      return;
+    }
+
+    // Resolve and STRICTLY verify active fulfillment provider (disabled providers MUST NEVER receive transactions)
+    const configuredProviders: ApiProviderId[] = [
+      ...(clubKonnect.isConfigured ? (["CLUBKONNECT"] as ApiProviderId[]) : []),
+      ...(alrahuzData.isConfigured ? (["ALRAHUZDATA"] as ApiProviderId[]) : []),
+    ];
+    const selectedApiProvider = selectActiveProviderForService({
+      controls: providerControls,
+      serviceType: normalizedService,
+      configuredProviders,
+      requestedProvider: liveLookup.apiProvider,
+    });
+
+    if (!selectedApiProvider || !isProviderEnabled(providerControls, selectedApiProvider)) {
+      res.status(503).json({
+        status: "FAILED",
+        message: "This service provider is currently disabled by the administrator. No debit was made.",
       });
       return;
     }
@@ -614,12 +738,22 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
       directApiWholesale: isDirectApiSuperAdmin,
     });
 
-    // Pure alphanumeric RequestID (no hyphens) for maximum ClubKonnect API compatibility
+    // Pure alphanumeric RequestID (no hyphens) for maximum provider API compatibility
     const reference = `MSGR${Date.now()}${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
 
     if (isDirectApiSuperAdmin) {
-      // Verify live upstream API float can cover wholesale cost before executing
-      if (clubKonnect.isConfigured) {
+      // Verify live upstream API float on the selected provider can cover wholesale cost before executing
+      if (selectedApiProvider === "ALRAHUZDATA" && alrahuzData.isConfigured) {
+        const alrBal = await alrahuzData.getWalletBalance();
+        const alrBalanceKobo = Math.round(alrBal.balanceNaira * 100);
+        if (alrBalanceKobo < pricing.providerCostKobo) {
+          res.status(400).json({
+            status: "FAILED",
+            message: `Insufficient live AlrahuzData balance (₦${(alrBalanceKobo / 100).toFixed(2)} available; ₦${(pricing.providerCostKobo / 100).toFixed(2)} wholesale cost required).`,
+          });
+          return;
+        }
+      } else if (selectedApiProvider === "CLUBKONNECT" && clubKonnect.isConfigured) {
         const ckRes = await clubKonnect.getWalletBalance();
         const rawBal = String(ckRes.balance ?? ckRes.Balance ?? ckRes.walletbalance ?? "").replace(/[^0-9.]/g, "");
         const ckBalanceNaira = Number(rawBal);
@@ -646,6 +780,7 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
         productName: pricing.productName,
         recipient: recipient.trim(),
         providerCostKobo: pricing.providerCostKobo,
+        apiProvider: selectedApiProvider,
       });
     } else {
       // Steps 7–9: Atomic balance validation, idempotency lock, and double-entry debit
@@ -661,112 +796,172 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
         providerCostKobo: pricing.providerCostKobo,
         sellingPriceKobo: pricing.sellingPriceKobo,
         feeKobo: pricing.feeKobo,
+        apiProvider: selectedApiProvider,
       });
     }
 
-    // Step 10–11: Submit to ClubKonnect & inspect response (NEVER refund on timeout!)
+    // Step 10–11: Submit to selected enabled provider (ClubKonnect OR AlrahuzData) — NEVER refund on timeout!
     try {
       let providerRes: Record<string, unknown>;
-      switch (normalizedService) {
-        case "AIRTIME":
-          providerRes = await clubKonnect.buyAirtime({
-            mobileNetwork: normalizedProvider,
-            amountNaira: pricing.faceValueNaira,
-            mobileNumber: recipient.trim(),
-            requestId: reference,
-          });
-          break;
-        case "DATA":
-          providerRes = await clubKonnect.buyData({
-            mobileNetwork: normalizedProvider,
-            dataPlan: normalizedProduct,
-            mobileNumber: recipient.trim(),
-            requestId: reference,
-          });
-          break;
-        case "ELECTRICITY":
-          providerRes = await clubKonnect.payElectricity({
-            electricCompany: normalizedProvider,
-            meterNo: recipient.trim(),
-            meterType: String(meterType || "prepaid"),
-            amountNaira: pricing.faceValueNaira,
-            phoneNo: recipient.trim(),
-            requestId: reference,
-          });
-          break;
-        case "CABLE_TV":
-          providerRes = await clubKonnect.payCableTv({
-            cableTv: normalizedProvider,
-            packageCode: normalizedProduct,
-            smartCardNo: recipient.trim(),
-            phoneNo: recipient.trim(),
-            requestId: reference,
-          });
-          break;
-        case "WAEC_PIN":
-          providerRes = await clubKonnect.buyWaecPin({
-            examType: normalizedProduct || "waecdirect",
-            phoneNo: recipient.trim(),
-            requestId: reference,
-          });
-          break;
-        case "JAMB_PIN":
-          providerRes = await clubKonnect.buyJambPin({
-            examType: normalizedProduct || "utme-mock",
-            profileId: recipient.trim(),
-            phoneNo: recipient.trim(),
-            requestId: reference,
-          });
-          break;
-        case "RECHARGE_CARD":
-          providerRes = await clubKonnect.buyRechargeEpin({
-            mobileNetwork: normalizedProvider,
-            valueNaira: pricing.faceValueNaira,
-            quantity: pricing.quantity,
-            requestId: reference,
-          });
-          break;
-        case "DATA_CARD":
-          providerRes = await clubKonnect.buyDataCardEpin({
-            mobileNetwork: normalizedProvider,
-            dataPlan: normalizedProduct,
-            quantity: pricing.quantity,
-            requestId: reference,
-          });
-          break;
-        case "SMILE":
-          providerRes = await clubKonnect.buySmileData({
-            mobileNetwork: normalizedProvider || "smile-direct",
-            dataPlan: normalizedProduct,
-            mobileNumber: recipient.trim(),
-            requestId: reference,
-          });
-          break;
-        case "SPECTRANET":
-          providerRes = await clubKonnect.buySpectranetPin({
-            mobileNetwork: normalizedProvider || "spectranet",
-            dataPlan: normalizedProduct,
-            mobileNumber: recipient.trim(),
-            requestId: reference,
-          });
-          break;
-        case "BETTING":
-          providerRes = await clubKonnect.fundBettingWallet({
-            bettingCompany: normalizedProvider,
-            customerId: recipient.trim(),
-            amountNaira: pricing.faceValueNaira,
-            requestId: reference,
-          });
-          break;
-        default:
-          throw new Error(`Unsupported service type: ${normalizedService}`);
+      if (selectedApiProvider === "ALRAHUZDATA") {
+        switch (normalizedService) {
+          case "AIRTIME":
+            providerRes = await alrahuzData.buyAirtime({
+              mobileNetwork: normalizedProvider,
+              amountNaira: pricing.faceValueNaira,
+              mobileNumber: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "DATA":
+            providerRes = await alrahuzData.buyData({
+              mobileNetwork: normalizedProvider,
+              planId: normalizedProduct,
+              mobileNumber: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "ELECTRICITY":
+            providerRes = await alrahuzData.payElectricity({
+              electricCompany: normalizedProvider,
+              meterNo: recipient.trim(),
+              meterType: String(meterType || "prepaid"),
+              amountNaira: pricing.faceValueNaira,
+              requestId: reference,
+            });
+            break;
+          case "CABLE_TV":
+            providerRes = await alrahuzData.payCableTv({
+              cableTv: normalizedProvider,
+              packageCode: normalizedProduct,
+              smartCardNo: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "WAEC_PIN":
+          case "JAMB_PIN":
+            providerRes = await alrahuzData.buyExamPin({
+              examName: normalizedService === "JAMB_PIN" ? "JAMB" : "WAEC",
+              quantity: pricing.quantity,
+              requestId: reference,
+            });
+            break;
+          case "RECHARGE_CARD":
+            providerRes = await alrahuzData.buyRechargeCard({
+              mobileNetwork: normalizedProvider,
+              denominationNaira: pricing.faceValueNaira,
+              quantity: pricing.quantity,
+              requestId: reference,
+            });
+            break;
+          default:
+            throw new Error(`AlrahuzData does not support service type: ${normalizedService}`);
+        }
+      } else {
+        switch (normalizedService) {
+          case "AIRTIME":
+            providerRes = await clubKonnect.buyAirtime({
+              mobileNetwork: normalizedProvider,
+              amountNaira: pricing.faceValueNaira,
+              mobileNumber: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "DATA":
+            providerRes = await clubKonnect.buyData({
+              mobileNetwork: normalizedProvider,
+              dataPlan: normalizedProduct,
+              mobileNumber: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "ELECTRICITY":
+            providerRes = await clubKonnect.payElectricity({
+              electricCompany: normalizedProvider,
+              meterNo: recipient.trim(),
+              meterType: String(meterType || "prepaid"),
+              amountNaira: pricing.faceValueNaira,
+              phoneNo: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "CABLE_TV":
+            providerRes = await clubKonnect.payCableTv({
+              cableTv: normalizedProvider,
+              packageCode: normalizedProduct,
+              smartCardNo: recipient.trim(),
+              phoneNo: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "WAEC_PIN":
+            providerRes = await clubKonnect.buyWaecPin({
+              examType: normalizedProduct || "waecdirect",
+              phoneNo: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "JAMB_PIN":
+            providerRes = await clubKonnect.buyJambPin({
+              examType: normalizedProduct || "utme-mock",
+              profileId: recipient.trim(),
+              phoneNo: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "RECHARGE_CARD":
+            providerRes = await clubKonnect.buyRechargeEpin({
+              mobileNetwork: normalizedProvider,
+              valueNaira: pricing.faceValueNaira,
+              quantity: pricing.quantity,
+              requestId: reference,
+            });
+            break;
+          case "DATA_CARD":
+            providerRes = await clubKonnect.buyDataCardEpin({
+              mobileNetwork: normalizedProvider,
+              dataPlan: normalizedProduct,
+              quantity: pricing.quantity,
+              requestId: reference,
+            });
+            break;
+          case "SMILE":
+            providerRes = await clubKonnect.buySmileData({
+              mobileNetwork: normalizedProvider || "smile-direct",
+              dataPlan: normalizedProduct,
+              mobileNumber: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "SPECTRANET":
+            providerRes = await clubKonnect.buySpectranetPin({
+              mobileNetwork: normalizedProvider || "spectranet",
+              dataPlan: normalizedProduct,
+              mobileNumber: recipient.trim(),
+              requestId: reference,
+            });
+            break;
+          case "BETTING":
+            providerRes = await clubKonnect.fundBettingWallet({
+              bettingCompany: normalizedProvider,
+              customerId: recipient.trim(),
+              amountNaira: pricing.faceValueNaira,
+              requestId: reference,
+            });
+            break;
+          default:
+            throw new Error(`Unsupported service type: ${normalizedService}`);
+        }
       }
 
-      let classified = classifyClubKonnectStatus(providerRes, normalizedService === "DATA_CARD", false);
+      let classified =
+        selectedApiProvider === "ALRAHUZDATA"
+          ? classifyAlrahuzStatus(providerRes, normalizedService === "DATA_CARD", false)
+          : classifyClubKonnectStatus(providerRes, normalizedService === "DATA_CARD", false);
 
       // ClubKonnect frequently returns ORDER_RECEIVED (code 100) and settles within 2-3 seconds.
       // Perform one quick verification poll by OrderID before returning PENDING to the customer.
-      if (classified.resolution === "PENDING" && classified.orderId) {
+      if (selectedApiProvider === "CLUBKONNECT" && classified.resolution === "PENDING" && classified.orderId) {
         await new Promise((resolve) => setTimeout(resolve, 2500));
         try {
           const pollRes = await clubKonnect.queryTransactionStatus({
@@ -1220,27 +1415,42 @@ app.post("/webhooks/flutterwave", async (req: Request, res: Response) => {
   }
 });
 
-// 8. ADMIN: PROVIDER HEALTH CHECK (ClubKonnect Balance + Flutterwave Main NGN Balance)
+// 8. ADMIN: PROVIDER HEALTH CHECK (ClubKonnect + AlrahuzData + Flutterwave Main NGN Balance)
 app.get("/api/v1/admin/provider-health", requireAuth, requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
   let ckBalance: string | null = null;
+  let alrBalance: string | null = null;
   let flwAvailable: string | null = null;
   let flwLedger: string | null = null;
 
+  const controls = await getProviderControls();
+
+  const [ckRes, alrRes, flwRes] = await Promise.allSettled([
+    clubKonnect.isConfigured ? clubKonnect.getWalletBalance() : Promise.resolve(null),
+    alrahuzData.isConfigured ? alrahuzData.getWalletBalance() : Promise.resolve(null),
+    flutterwave.isConfigured ? flutterwave.getNgnBalance() : Promise.resolve(null),
+  ]);
+
   if (clubKonnect.isConfigured) {
-    try {
-      const balRes = await clubKonnect.getWalletBalance();
-      ckBalance = String(balRes.balance || balRes.Balance || "Unavailable");
-    } catch {
+    if (ckRes.status === "fulfilled" && ckRes.value) {
+      ckBalance = String(ckRes.value.balance || ckRes.value.Balance || "Unavailable");
+    } else {
       ckBalance = "Query failed";
     }
   }
 
+  if (alrahuzData.isConfigured) {
+    if (alrRes.status === "fulfilled" && alrRes.value) {
+      alrBalance = alrRes.value.balanceNaira.toFixed(2);
+    } else {
+      alrBalance = "Query failed";
+    }
+  }
+
   if (flutterwave.isConfigured) {
-    try {
-      const flwBal = await flutterwave.getNgnBalance();
-      flwAvailable = flwBal.availableNaira.toFixed(2);
-      flwLedger = flwBal.ledgerNaira.toFixed(2);
-    } catch {
+    if (flwRes.status === "fulfilled" && flwRes.value) {
+      flwAvailable = flwRes.value.availableNaira.toFixed(2);
+      flwLedger = flwRes.value.ledgerNaira.toFixed(2);
+    } else {
       flwAvailable = "Query failed";
       flwLedger = "Query failed";
     }
@@ -1248,14 +1458,18 @@ app.get("/api/v1/admin/provider-health", requireAuth, requireAdmin, async (_req:
 
   res.json({
     clubKonnectConfigured: clubKonnect.isConfigured,
+    clubKonnectEnabled: isProviderEnabled(controls, "CLUBKONNECT"),
     clubKonnectBalanceNaira: ckBalance,
+    alrahuzDataConfigured: alrahuzData.isConfigured,
+    alrahuzDataEnabled: isProviderEnabled(controls, "ALRAHUZDATA"),
+    alrahuzDataBalanceNaira: alrBalance,
     flutterwaveConfigured: flutterwave.isConfigured,
     flutterwaveAvailableBalanceNaira: flwAvailable,
     flutterwaveLedgerBalanceNaira: flwLedger,
     environment: CONFIG.environment,
     message:
-      clubKonnect.isConfigured && flutterwave.isConfigured
-        ? "All providers configured and reachable."
+      (clubKonnect.isConfigured || alrahuzData.isConfigured) && flutterwave.isConfigured
+        ? "Provider balances and connectivity verified."
         : "Set missing provider environment secrets on your backend host.",
   });
 });
@@ -1611,11 +1825,12 @@ app.post("/api/v1/admin/catalog/sync-clubkonnect", requireAuth, requireAdmin, as
   }
 });
 
-// Mount Super Admin Live Treasury Transfers, Pricing/Margin Rules Matrix, Batch Reconcile & Executive Overview Routes
+// Mount Super Admin Live Treasury Transfers, Multi-Provider Controls, Pricing Matrix, Batch Reconcile & Profit Dashboard Routes
 registerAdminTreasuryAndPricingRoutes(app, {
   requireAuth,
   requireAdmin,
   clubKonnect,
+  alrahuzData,
   flutterwave,
   reconcileTransactionWithClubKonnect,
 });

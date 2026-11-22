@@ -194,11 +194,44 @@ fun AdminTreasuryTab(
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        text = "Env: ${providerHealth?.environment ?: "LIVE"}",
+                                        text = "Env: ${providerHealth?.environment ?: "LIVE"} • ${if (providerHealth?.clubKonnectEnabled == false) "OFF" else "ON"}",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = Color(0xFF9EB9D4)
                                     )
                                 }
+                            }
+                        }
+
+                        Surface(
+                            color = Color.White.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text("AlrahuzData Live Float", style = MaterialTheme.typography.labelSmall, color = Color(0xFFCFE2F3))
+                                    Text(
+                                        text = when {
+                                            providerHealth?.alrahuzDataEnabled == false -> "Status: OFF (Paused)"
+                                            providerHealth?.alrahuzDataConfigured == true -> "Status: ON • Configured"
+                                            else -> "Set ALRAHUZDATA_API_TOKEN on Render"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFF9EB9D4)
+                                    )
+                                }
+                                Text(
+                                    text = "₦${providerHealth?.alrahuzDataBalanceNaira ?: "—"}",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMono),
+                                    color = Color(0xFF7CF5D1),
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }

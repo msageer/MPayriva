@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalance
@@ -82,8 +84,8 @@ fun AdminOverviewTab(
         }
     }
 
-    // Period filter: 0 = All Time, 1 = Last 7 Days, 2 = Today
-    var selectedPeriod by remember { mutableIntStateOf(0) }
+    // Period filter: 0 = Daily, 1 = Weekly, 2 = Monthly, 3 = All Time
+    var selectedPeriod by remember { mutableIntStateOf(3) }
 
     // Combine server-aggregated metrics with live Firestore fallback so UI is rich immediately
     val totalUsers = metrics?.totalUsers ?: users.size
@@ -97,26 +99,52 @@ fun AdminOverviewTab(
     val fallbackSuccessTxs = remember(transactions) {
         transactions.filter { it.resolvedStatus() == TransactionStatus.SUCCESSFUL }
     }
+    val fallbackRefundTxs = remember(transactions) {
+        transactions.filter { it.resolvedStatus() == TransactionStatus.REVERSED }
+    }
     val allTimeVolume = metrics?.allTimeVolumeKobo ?: fallbackSuccessTxs.sumOf { it.totalAmountKobo }
     val allTimeProfit = metrics?.allTimeProfitKobo ?: fallbackSuccessTxs.sumOf { it.grossMarginKobo }
-    val allTimeTxCount = metrics?.allTimeTxCount ?: transactions.size
+    val allTimeTxCount = metrics?.allTimeTxCount ?: fallbackSuccessTxs.size
 
-    val periodVolume = when (selectedPeriod) {
-        2 -> metrics?.todayVolumeKobo ?: 0L
+    val activePeriodObj = when (selectedPeriod) {
+        0 -> metrics?.dailyMetrics
+        1 -> metrics?.weeklyMetrics
+        2 -> metrics?.monthlyMetrics
+        else -> metrics?.allTimeMetrics
+    }
+
+    val periodLabel = when (selectedPeriod) {
+        0 -> "Daily (Today)"
+        1 -> "Weekly (7d)"
+        2 -> "Monthly (30d)"
+        else -> "All Time"
+    }
+
+    val periodSales = activePeriodObj?.totalSalesKobo ?: when (selectedPeriod) {
+        0 -> metrics?.todayVolumeKobo ?: 0L
         1 -> metrics?.last7dVolumeKobo ?: 0L
+        2 -> metrics?.last30dVolumeKobo ?: allTimeVolume
         else -> allTimeVolume
     }
-    val periodProfit = when (selectedPeriod) {
-        2 -> metrics?.todayProfitKobo ?: 0L
+    val periodProviderCosts = activePeriodObj?.providerCostsKobo ?: fallbackSuccessTxs.sumOf { it.providerCostKobo }
+    val periodProfit = activePeriodObj?.grossProfitKobo ?: when (selectedPeriod) {
+        0 -> metrics?.todayProfitKobo ?: 0L
         1 -> metrics?.last7dProfitKobo ?: 0L
+        2 -> metrics?.last30dProfitKobo ?: allTimeProfit
         else -> allTimeProfit
     }
-    val periodTxCount = when (selectedPeriod) {
-        2 -> metrics?.todayTxCount ?: 0
+    val periodPaymentFees = activePeriodObj?.paymentFeesKobo ?: fallbackSuccessTxs.sumOf { it.feeKobo }
+    val periodRefundsKobo = activePeriodObj?.refundsKobo ?: fallbackRefundTxs.sumOf { it.totalAmountKobo }
+    val periodRefundCount = activePeriodObj?.refundCount ?: fallbackRefundTxs.size
+    val periodTxCount = activePeriodObj?.txCount ?: when (selectedPeriod) {
+        0 -> metrics?.todayTxCount ?: 0
         1 -> metrics?.last7dTxCount ?: 0
+        2 -> metrics?.last30dTxCount ?: allTimeTxCount
         else -> allTimeTxCount
     }
-    val effectiveMarginPct = if (periodVolume > 0L) (periodProfit * 100.0) / periodVolume else 0.0
+    val periodBreakdown = activePeriodObj?.serviceBreakdown
+        ?: metrics?.serviceBreakdown.orEmpty()
+    val effectiveMarginPct = if (periodSales > 0L) (periodProfit * 100.0) / periodSales else 0.0
 
     val successCount = metrics?.successfulCount ?: fallbackSuccessTxs.size
     val pendingCount = metrics?.pendingCount ?: transactions.count {
@@ -256,11 +284,59 @@ fun AdminOverviewTab(
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        text = if (metrics?.lowClubKonnectFloatWarning == true) "Low vending float" else "Utility vending float",
+                                        text = if (metrics?.clubKonnectEnabled == false) {
+                                            "OFF • Paused"
+                                        } else if (metrics?.lowClubKonnectFloatWarning == true) {
+                                            "Low vending float"
+                                        } else {
+                                            "ON • Vending float"
+                                        },
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFFA9C2D6)
+                                        color = if (metrics?.clubKonnectEnabled == false) Color(0xFFFFB4AB) else Color(0xFFA9C2D6)
                                     )
                                 }
+                            }
+                        }
+
+                        // AlrahuzData Live Float Tile
+                        Surface(
+                            color = Color.White.copy(alpha = 0.09f),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        "AlrahuzData Live Float",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFFD6E4F0)
+                                    )
+                                    Text(
+                                        text = when {
+                                            metrics?.alrahuzDataEnabled == false -> "Provider OFF (Blocked)"
+                                            metrics?.alrahuzDataReachable == true -> "ON • Connected"
+                                            else -> "Set ALRAHUZDATA_API_TOKEN to activate"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (metrics?.alrahuzDataEnabled == false) Color(0xFFFFB4AB) else Color(0xFFA9C2D6)
+                                    )
+                                }
+                                Text(
+                                    text = if (metrics?.alrahuzDataReachable == true) {
+                                        CurrencyFormatter.formatKobo(metrics.alrahuzDataBalanceKobo)
+                                    } else {
+                                        "—"
+                                    },
+                                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMono),
+                                    color = if (metrics?.alrahuzDataReachable == true) Color(0xFF7CF5D1) else Color(0xFFD6E4F0),
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
 
@@ -341,47 +417,49 @@ fun AdminOverviewTab(
             }
         }
 
-        // 3. Period Selector for Volume & Profit
+        // 3. Period Selector for Profit Dashboard (Daily | Weekly | Monthly | All Time)
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Performance & Profit",
+                    "Profit & Financial Dashboard",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("All Time", "7 Days", "Today").forEachIndexed { idx, label ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf("Daily", "Weekly", "Monthly", "All Time").forEachIndexed { idx, label ->
                         FilterChip(
                             selected = selectedPeriod == idx,
                             onClick = { selectedPeriod = idx },
-                            label = { Text(label) }
+                            label = { Text(label) },
+                            modifier = Modifier.testTag("admin_overview_period_${label.lowercase().replace(" ", "_")}")
                         )
                     }
                 }
             }
         }
 
-        // 4. Core KPI 2x2 Grid
+        // 4. Financial Profit KPI Grid (Sales, Provider Costs, Gross Profit, Payment Fees, Refunds)
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 OverviewMetricCard(
-                    title = "Total Users",
-                    value = totalUsers.toString(),
-                    subtitle = "$individualUsers Ind • $businessUsers Biz • $vaUsers VA",
-                    badgeText = if (restrictedUsers > 0) "$restrictedUsers Restricted" else "$activeUsers Active",
-                    badgeColor = if (restrictedUsers > 0) StatusPending else StatusSuccess,
+                    title = "Total Sales",
+                    value = CurrencyFormatter.formatKobo(periodSales),
+                    subtitle = "$periodLabel • $periodTxCount Orders",
+                    badgeText = "${String.format("%.1f", successRate)}% Success",
+                    badgeColor = StatusSuccess,
                     modifier = Modifier.weight(1f)
                 )
                 OverviewMetricCard(
-                    title = "Wallet Liabilities",
-                    value = CurrencyFormatter.formatKobo(totalWalletLiability),
-                    subtitle = "Customer NGN Float",
-                    badgeText = "$openTicketsCount Open Tickets",
-                    badgeColor = if (openTicketsCount > 0) StatusPending else MaterialTheme.colorScheme.secondary,
+                    title = "Provider Costs",
+                    value = CurrencyFormatter.formatKobo(periodProviderCosts),
+                    subtitle = "Wholesale API Cost",
+                    badgeText = "Settled Outflow",
+                    badgeColor = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -390,19 +468,40 @@ fun AdminOverviewTab(
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 OverviewMetricCard(
-                    title = "Settled Volume",
-                    value = CurrencyFormatter.formatKobo(periodVolume),
-                    subtitle = "$periodTxCount Txns",
-                    badgeText = "${String.format("%.1f", successRate)}% Success",
-                    badgeColor = StatusSuccess,
+                    title = "Actual Gross Profit",
+                    value = CurrencyFormatter.formatKobo(periodProfit),
+                    subtitle = "Sales − Provider Cost",
+                    badgeText = "${String.format("%.2f", effectiveMarginPct)}% Net Margin",
+                    badgeColor = if (periodProfit >= 0) StatusSuccess else StatusFailed,
                     modifier = Modifier.weight(1f)
                 )
                 OverviewMetricCard(
-                    title = "Gross Margin / Profit",
-                    value = CurrencyFormatter.formatKobo(periodProfit),
-                    subtitle = "Net Earned Profit",
-                    badgeText = "${String.format("%.2f", effectiveMarginPct)}% Avg Margin",
-                    badgeColor = if (periodProfit >= 0) StatusSuccess else StatusFailed,
+                    title = "Payment Fees",
+                    value = CurrencyFormatter.formatKobo(periodPaymentFees),
+                    subtitle = "Collected Service Fees",
+                    badgeText = periodLabel,
+                    badgeColor = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                OverviewMetricCard(
+                    title = "Refunds & Reversals",
+                    value = CurrencyFormatter.formatKobo(periodRefundsKobo),
+                    subtitle = "$periodRefundCount Reversed Order(s)",
+                    badgeText = if (periodRefundCount > 0) "Auto-Refunded" else "Zero Refunds",
+                    badgeColor = if (periodRefundCount > 0) StatusPending else StatusSuccess,
+                    modifier = Modifier.weight(1f)
+                )
+                OverviewMetricCard(
+                    title = "Wallet Liabilities",
+                    value = CurrencyFormatter.formatKobo(totalWalletLiability),
+                    subtitle = "$totalUsers Users ($individualUsers Ind • $businessUsers Biz)",
+                    badgeText = if (restrictedUsers > 0) "$restrictedUsers Restricted" else "$vaUsers VA Active",
+                    badgeColor = if (openTicketsCount > 0) StatusPending else StatusSuccess,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -488,9 +587,9 @@ fun AdminOverviewTab(
             }
         }
 
-        // 6. Revenue & Net Profit Breakdown by Service
+        // 6. Earnings by Service Category (Period-Filtered Sales, Provider Cost & Profit)
         item {
-            val breakdown = metrics?.serviceBreakdown.orEmpty()
+            val breakdown = periodBreakdown
             val maxVol = breakdown.maxOfOrNull { it.volumeKobo }?.coerceAtLeast(1L) ?: 1L
 
             Card(
@@ -505,18 +604,25 @@ fun AdminOverviewTab(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                             Icon(
                                 Icons.Filled.TrendingUp,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.secondary
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                "Profit & Volume by Service",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Column {
+                                Text(
+                                    "Earnings by Service Category",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "$periodLabel • Sales vs Provider Cost vs Profit",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                         OutlinedButton(
                             onClick = onOpenPricingTab,
@@ -528,7 +634,7 @@ fun AdminOverviewTab(
 
                     if (breakdown.isEmpty()) {
                         Text(
-                            text = "No settled transactions yet. Tap Refresh Live after transactions complete to inspect profit breakdown by utility service.",
+                            text = "No settled transactions in $periodLabel yet. Switch period filter or tap Refresh Live.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -547,10 +653,25 @@ fun AdminOverviewTab(
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "${CurrencyFormatter.formatKobo(row.volumeKobo)}  •  +${CurrencyFormatter.formatKobo(row.profitKobo)}",
+                                        text = "${if (row.profitKobo >= 0) "+" else ""}${CurrencyFormatter.formatKobo(row.profitKobo)} profit",
                                         style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
                                         color = if (row.profitKobo >= 0) StatusSuccess else StatusFailed,
                                         fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "Sales: ${CurrencyFormatter.formatKobo(row.volumeKobo)}",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = "Cost: ${CurrencyFormatter.formatKobo(row.providerCostKobo)} • Fees: ${CurrencyFormatter.formatKobo(row.feesKobo)}",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                                 LinearProgressIndicator(
@@ -587,17 +708,17 @@ fun AdminOverviewTab(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            "Automated Backend Controls Active",
+                            "Automated Backend Protection Active",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
                     }
                     Text(
-                        text = "• Real-time Solvency Ratio monitoring (Provider Float vs Customer Liabilities)\n" +
-                            "• Low ClubKonnect Float Alert (< ₦10,000)\n" +
-                            "• 1-Click Batch Pending Transaction Reconciler\n" +
-                            "• Dynamic Service Markup/Discount Engine across all live ClubKonnect products\n" +
-                            "• Live Flutterwave v3 Payouts with NUBAN Bank Name Verification",
+                        text = "• Multi-Provider Live Routing (ClubKonnect + AlrahuzData) with instant ON/OFF kill switches\n" +
+                            "• Server-side price validation & below-cost override guard\n" +
+                            "• Duplicate transaction idempotency locks & double-entry ledger accounting\n" +
+                            "• Real-time Solvency Ratio monitoring (Provider Float vs Customer Liabilities)\n" +
+                            "• 1-Click Batch Pending Reconciler across all enabled providers",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

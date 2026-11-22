@@ -47,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -90,6 +91,7 @@ fun AdminDashboardScreen(
     val banner by adminViewModel.statusBanner.collectAsStateWithLifecycle()
     val isBusy by adminViewModel.isBusy.collectAsStateWithLifecycle()
     val providerHealth by adminViewModel.providerHealth.collectAsStateWithLifecycle()
+    val providerControls by adminViewModel.providerControls.collectAsStateWithLifecycle()
     val overviewMetrics by adminViewModel.overviewMetrics.collectAsStateWithLifecycle()
     val pricingMatrix by adminViewModel.pricingMatrix.collectAsStateWithLifecycle()
     val isLoadingPricing by adminViewModel.isLoadingPricing.collectAsStateWithLifecycle()
@@ -224,11 +226,15 @@ fun AdminDashboardScreen(
                     pricingMatrix = pricingMatrix,
                     isLoadingPricing = isLoadingPricing,
                     platformConfig = platformConfig,
+                    providerControls = providerControls,
                     isBusy = isBusy,
                     onLoadPricingMatrix = { refresh -> adminViewModel.loadPricingMatrix(refresh = refresh) },
                     onSavePricingRules = adminViewModel::savePricingRules,
                     onSavePlanOverride = adminViewModel::savePlanOverride,
-                    onToggleUtilityService = adminViewModel::toggleUtilityService
+                    onToggleUtilityService = adminViewModel::toggleUtilityService,
+                    onRefreshProviderControls = { adminViewModel.loadProviderControls(silent = false) },
+                    onToggleApiProvider = adminViewModel::toggleApiProvider,
+                    onUpdateServiceRouting = adminViewModel::updateServiceRouting
                 )
 
                 3 -> {
@@ -298,10 +304,24 @@ fun AdminDashboardScreen(
                     }
                     val urlConfigured = activeBackendUrl.startsWith("https://") || activeBackendUrl.startsWith("http://10.0.2.2")
 
+                    LaunchedEffect(Unit) {
+                        adminViewModel.loadProviderControls(silent = true)
+                    }
+
                     LazyColumn(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        item {
+                            AdminProvidersControlCard(
+                                controls = providerControls,
+                                isBusy = isBusy,
+                                onRefresh = { adminViewModel.loadProviderControls(silent = false) },
+                                onToggleProvider = adminViewModel::toggleApiProvider,
+                                onUpdateServiceRouting = adminViewModel::updateServiceRouting
+                            )
+                        }
+
                         item {
                             Card(
                                 shape = RoundedCornerShape(16.dp),
@@ -428,7 +448,8 @@ fun AdminDashboardScreen(
                                     Text(
                                         text = providerHealth?.let {
                                             "Env: ${it.environment}\n" +
-                                                "ClubKonnect: ${if (it.clubKonnectConfigured) "Configured" else "Missing"} (₦${it.clubKonnectBalanceNaira ?: "N/A"})\n" +
+                                                "ClubKonnect: ${if (it.clubKonnectConfigured) "Configured" else "Missing"} • ${if (it.clubKonnectEnabled) "ON" else "OFF"} (₦${it.clubKonnectBalanceNaira ?: "N/A"})\n" +
+                                                "AlrahuzData: ${if (it.alrahuzDataConfigured) "Configured" else "Token Not Set"} • ${if (it.alrahuzDataEnabled) "ON" else "OFF"} (₦${it.alrahuzDataBalanceNaira ?: "N/A"})\n" +
                                                 "Flutterwave: ${if (it.flutterwaveConfigured) "Configured" else "Missing"} (Avail: ₦${it.flutterwaveAvailableBalanceNaira ?: "N/A"})"
                                         } ?: "Tap Query Provider Health to verify backend connectivity.",
                                         style = MaterialTheme.typography.bodySmall

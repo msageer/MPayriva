@@ -125,6 +125,8 @@ data class PurchaseResponse(
 @JsonClass(generateAdapter = true)
 data class LiveCatalogPlanDto(
     val id: String = "",
+    val apiProvider: String = "CLUBKONNECT",
+    val apiProviderName: String = "ClubKonnect",
     val serviceType: String = "",
     val providerCode: String = "",
     val providerName: String = "",
@@ -156,6 +158,7 @@ data class LiveStorefrontCatalogResponse(
     val status: String = "success",
     val fetchedAt: String = "",
     val clubKonnectConnected: Boolean = false,
+    val alrahuzDataConnected: Boolean = false,
     val directApiMode: Boolean = false,
     val directApiBalanceNaira: String? = null,
     val totalPlans: Int = 0,
@@ -174,7 +177,11 @@ data class LiveStorefrontCatalogResponse(
 @JsonClass(generateAdapter = true)
 data class ProviderHealthResponse(
     val clubKonnectConfigured: Boolean,
+    val clubKonnectEnabled: Boolean = true,
     val clubKonnectBalanceNaira: String? = null,
+    val alrahuzDataConfigured: Boolean = false,
+    val alrahuzDataEnabled: Boolean = true,
+    val alrahuzDataBalanceNaira: String? = null,
     val flutterwaveConfigured: Boolean,
     val flutterwaveAvailableBalanceNaira: String? = null,
     val flutterwaveLedgerBalanceNaira: String? = null,
@@ -300,13 +307,69 @@ data class ServicePricingRuleDto(
 )
 
 @JsonClass(generateAdapter = true)
+data class ProviderStatusSummaryDto(
+    val id: String = "",
+    val name: String = "",
+    val configured: Boolean = false,
+    val enabled: Boolean = true,
+    val reachable: Boolean = false,
+    val livePlanCount: Int = 0,
+    val balanceNaira: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class ProviderControlsResponse(
+    val status: String = "success",
+    val providers: List<ProviderStatusSummaryDto> = emptyList(),
+    val serviceRouting: Map<String, String> = emptyMap(),
+    val updatedBy: String? = null,
+    val updatedAtIso: String? = null,
+    val message: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class UpdateProviderControlsRequest(
+    val clubKonnectEnabled: Boolean? = null,
+    val alrahuzDataEnabled: Boolean? = null,
+    val serviceRouting: Map<String, String>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class ProviderComparisonRowDto(
+    val id: String = "",
+    val apiProvider: String = "CLUBKONNECT",
+    val apiProviderName: String = "ClubKonnect",
+    val serviceType: String = "",
+    val providerCode: String = "",
+    val providerName: String = "",
+    val productCode: String = "",
+    val productName: String = "",
+    val categoryGroup: String = "",
+    val available: Boolean = true,
+    val providerEnabled: Boolean = true,
+    val providerCostKobo: Long = 0L,
+    val sellingPriceKobo: Long = 0L,
+    val feeKobo: Long = 0L,
+    val expectedProfitKobo: Long = 0L,
+    val profitMarginPercent: Double = 0.0,
+    val commissionPercent: Double = 0.0,
+    val discountPercent: Double = 0.0,
+    val comparisonKey: String = "",
+    val isBestValue: Boolean = false
+)
+
+@JsonClass(generateAdapter = true)
 data class AdminPricingMatrixResponse(
     val status: String = "success",
     val fetchedAt: String = "",
     val clubKonnectConnected: Boolean = false,
+    val alrahuzDataConnected: Boolean = false,
     val totalPlans: Int = 0,
     val rules: List<ServicePricingRuleDto> = emptyList(),
     val catalog: LiveStorefrontCatalogResponse = LiveStorefrontCatalogResponse(),
+    val providerComparison: List<ProviderComparisonRowDto> = emptyList(),
+    val providersSummary: List<ProviderStatusSummaryDto> = emptyList(),
+    val serviceRouting: Map<String, String> = emptyMap(),
     val message: String? = null
 )
 
@@ -318,6 +381,7 @@ data class SavePricingRulesRequest(
 @JsonClass(generateAdapter = true)
 data class SavePlanOverrideRequest(
     val serviceType: String,
+    val apiProvider: String? = null,
     val providerCode: String,
     val providerName: String,
     val productCode: String,
@@ -330,7 +394,8 @@ data class SavePlanOverrideRequest(
     val discountPercent: Double,
     val commissionPercent: Double,
     val enabled: Boolean = true,
-    val clearOverride: Boolean = false
+    val clearOverride: Boolean = false,
+    val allowBelowCost: Boolean = false
 )
 
 @JsonClass(generateAdapter = true)
@@ -356,7 +421,21 @@ data class ServiceRevenueBreakdownDto(
     val label: String = "",
     val txCount: Int = 0,
     val volumeKobo: Long = 0L,
-    val profitKobo: Long = 0L
+    val providerCostKobo: Long = 0L,
+    val profitKobo: Long = 0L,
+    val feesKobo: Long = 0L
+)
+
+@JsonClass(generateAdapter = true)
+data class OverviewPeriodMetricsDto(
+    val totalSalesKobo: Long = 0L,
+    val providerCostsKobo: Long = 0L,
+    val grossProfitKobo: Long = 0L,
+    val paymentFeesKobo: Long = 0L,
+    val refundsKobo: Long = 0L,
+    val refundCount: Int = 0,
+    val txCount: Int = 0,
+    val serviceBreakdown: List<ServiceRevenueBreakdownDto> = emptyList()
 )
 
 @JsonClass(generateAdapter = true)
@@ -372,6 +451,10 @@ data class AdminOverviewMetricsResponse(
     val totalWalletLiabilitiesKobo: Long = 0L,
     val clubKonnectBalanceKobo: Long = 0L,
     val clubKonnectReachable: Boolean = false,
+    val clubKonnectEnabled: Boolean = true,
+    val alrahuzDataBalanceKobo: Long = 0L,
+    val alrahuzDataReachable: Boolean = false,
+    val alrahuzDataEnabled: Boolean = true,
     val flutterwaveAvailableKobo: Long = 0L,
     val flutterwaveLedgerKobo: Long = 0L,
     val flutterwaveReachable: Boolean = false,
@@ -388,13 +471,20 @@ data class AdminOverviewMetricsResponse(
     val last7dVolumeKobo: Long = 0L,
     val last7dProfitKobo: Long = 0L,
     val last7dTxCount: Int = 0,
+    val last30dVolumeKobo: Long = 0L,
+    val last30dProfitKobo: Long = 0L,
+    val last30dTxCount: Int = 0,
     val successfulCount: Int = 0,
     val pendingCount: Int = 0,
     val failedCount: Int = 0,
     val reversedCount: Int = 0,
     val successRatePercent: Double = 100.0,
     val openTicketsCount: Int = 0,
-    val serviceBreakdown: List<ServiceRevenueBreakdownDto> = emptyList()
+    val serviceBreakdown: List<ServiceRevenueBreakdownDto> = emptyList(),
+    val dailyMetrics: OverviewPeriodMetricsDto? = null,
+    val weeklyMetrics: OverviewPeriodMetricsDto? = null,
+    val monthlyMetrics: OverviewPeriodMetricsDto? = null,
+    val allTimeMetrics: OverviewPeriodMetricsDto? = null
 )
 
 interface BackendApiService {
@@ -563,6 +653,17 @@ interface BackendApiService {
     suspend fun adminGetOverviewMetrics(
         @Header("Authorization") bearerToken: String
     ): Response<AdminOverviewMetricsResponse>
+
+    @GET("api/v1/admin/providers/controls")
+    suspend fun adminGetProviderControls(
+        @Header("Authorization") bearerToken: String
+    ): Response<ProviderControlsResponse>
+
+    @POST("api/v1/admin/providers/controls")
+    suspend fun adminUpdateProviderControls(
+        @Header("Authorization") bearerToken: String,
+        @Body request: UpdateProviderControlsRequest
+    ): Response<ProviderControlsResponse>
 }
 
 class TrustedBackendClient(
@@ -737,6 +838,12 @@ class TrustedBackendClient(
 
     suspend fun adminGetOverviewMetrics(): Result<AdminOverviewMetricsResponse> =
         executeCall { it.adminGetOverviewMetrics(requireBearerToken()) }
+
+    suspend fun adminGetProviderControls(): Result<ProviderControlsResponse> =
+        executeCall { it.adminGetProviderControls(requireBearerToken()) }
+
+    suspend fun adminUpdateProviderControls(request: UpdateProviderControlsRequest): Result<ProviderControlsResponse> =
+        executeCall { it.adminUpdateProviderControls(requireBearerToken(), request) }
 
     private suspend fun <T> executeCall(block: suspend (BackendApiService) -> Response<T>): Result<T> {
         return try {

@@ -122,7 +122,9 @@ export async function atomicReserveAndCreatePurchase(params: {
   providerCostKobo: number;
   sellingPriceKobo: number;
   feeKobo: number;
+  apiProvider?: "CLUBKONNECT" | "ALRAHUZDATA";
 }) {
+  const activeApiProvider = params.apiProvider || "CLUBKONNECT";
   const totalDebitKobo = params.sellingPriceKobo + params.feeKobo;
   const grossMarginKobo = totalDebitKobo - params.providerCostKobo;
   if (totalDebitKobo <= 0) throw new Error("Invalid purchase amount.");
@@ -168,7 +170,7 @@ export async function atomicReserveAndCreatePurchase(params: {
       idempotencyKey: params.idempotencyKey,
       type: params.serviceType,
       status: "PROCESSING",
-      provider: "CLUBKONNECT",
+      provider: activeApiProvider,
       providerCode: params.providerCode,
       recipient: params.recipient,
       productName: params.productName,
@@ -200,7 +202,7 @@ export async function atomicReserveAndCreatePurchase(params: {
       transactionId: params.reference,
       reference: params.reference,
       entryType: "CREDIT",
-      accountCode: "CLUBKONNECT_PAYABLE",
+      accountCode: activeApiProvider === "ALRAHUZDATA" ? "ALRAHUZDATA_PAYABLE" : "CLUBKONNECT_PAYABLE",
       amountKobo: params.providerCostKobo,
       balanceBeforeKobo: balanceBefore,
       balanceAfterKobo: balanceAfter,
@@ -242,7 +244,9 @@ export async function atomicCreateDirectApiPurchase(params: {
   productName: string;
   recipient: string;
   providerCostKobo: number;
+  apiProvider?: "CLUBKONNECT" | "ALRAHUZDATA";
 }) {
+  const activeApiProvider = params.apiProvider || "CLUBKONNECT";
   const wholesaleCostKobo = Math.max(0, Math.round(params.providerCostKobo));
   if (wholesaleCostKobo <= 0) throw new Error("Invalid wholesale API purchase amount.");
 
@@ -279,7 +283,7 @@ export async function atomicCreateDirectApiPurchase(params: {
       idempotencyKey: params.idempotencyKey,
       type: params.serviceType,
       status: "PROCESSING",
-      provider: "CLUBKONNECT",
+      provider: activeApiProvider,
       providerCode: params.providerCode,
       recipient: params.recipient,
       productName: params.productName,
@@ -300,7 +304,7 @@ export async function atomicCreateDirectApiPurchase(params: {
       transactionId: params.reference,
       reference: params.reference,
       entryType: "DEBIT",
-      accountCode: "CLUBKONNECT_DIRECT_API",
+      accountCode: activeApiProvider === "ALRAHUZDATA" ? "ALRAHUZDATA_DIRECT_API" : "CLUBKONNECT_DIRECT_API",
       amountKobo: wholesaleCostKobo,
       balanceBeforeKobo: currentWalletKobo,
       balanceAfterKobo: currentWalletKobo,

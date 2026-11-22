@@ -1,6 +1,15 @@
 import { db } from "./config";
 import { FieldValue } from "firebase-admin/firestore";
 import { ClubKonnectClient } from "./clubKonnectClient";
+import { AlrahuzDataClient } from "./alrahuzDataClient";
+import { parseAlrahuzUserCatalog } from "./alrahuzCatalogParser";
+import {
+  ApiProviderId,
+  PROVIDER_DISPLAY_NAMES,
+  ProviderControlsConfig,
+  getProviderControls,
+  isProviderEnabled,
+} from "./providerControls";
 import {
   CatalogPricingDoc,
   DEFAULT_SERVICE_PRICING_RULES,
@@ -13,6 +22,8 @@ import {
 
 export interface LiveCatalogPlan {
   id: string;
+  apiProvider: ApiProviderId;
+  apiProviderName: string;
   serviceType: string;
   providerCode: string;
   providerName: string;
@@ -32,6 +43,39 @@ export interface LiveCatalogPlan {
   available: boolean;
 }
 
+export interface ProviderComparisonRow {
+  id: string;
+  apiProvider: ApiProviderId;
+  apiProviderName: string;
+  serviceType: string;
+  providerCode: string;
+  providerName: string;
+  productCode: string;
+  productName: string;
+  categoryGroup: string;
+  available: boolean;
+  providerEnabled: boolean;
+  providerCostKobo: number;
+  sellingPriceKobo: number;
+  feeKobo: number;
+  expectedProfitKobo: number;
+  profitMarginPercent: number;
+  commissionPercent: number;
+  discountPercent: number;
+  comparisonKey: string;
+  isBestValue: boolean;
+}
+
+export interface ProviderStatusSummary {
+  id: ApiProviderId;
+  name: string;
+  configured: boolean;
+  enabled: boolean;
+  reachable: boolean;
+  livePlanCount: number;
+  balanceNaira: string | null;
+}
+
 export interface LiveServiceAvailabilityGroup {
   available: boolean;
   statusMessage: string;
@@ -42,6 +86,7 @@ export interface LiveStorefrontCatalogResponse {
   status: string;
   fetchedAt: string;
   clubKonnectConnected: boolean;
+  alrahuzDataConnected?: boolean;
   directApiMode?: boolean;
   directApiBalanceNaira?: string | null;
   totalPlans: number;
@@ -57,8 +102,17 @@ export interface LiveStorefrontCatalogResponse {
   betting: LiveCatalogPlan[];
 }
 
+export interface MultiProviderAdminCatalogBundle {
+  routedCatalog: LiveStorefrontCatalogResponse;
+  allProvidersCatalog: LiveStorefrontCatalogResponse;
+  providerComparison: ProviderComparisonRow[];
+  providersSummary: ProviderStatusSummary[];
+  providerControls: ProviderControlsConfig;
+}
+
 const CACHE_TTL_MS = 5 * 60 * 1000;
 let cachedCatalog: { expiresAt: number; data: LiveStorefrontCatalogResponse } | null = null;
+let cachedMultiBundle: { expiresAt: number; data: MultiProviderAdminCatalogBundle } | null = null;
 
 const NETWORK_NAME_TO_CODE: Record<string, { code: string; name: string }> = {
   MTN: { code: "01", name: "MTN Nigeria" },
@@ -258,6 +312,8 @@ function parseNestedProductArray(
 
         results.push({
           id: key.replace(/[^a-z0-9_-]/g, "_"),
+          apiProvider: "CLUBKONNECT",
+          apiProviderName: "ClubKonnect",
           serviceType,
           providerCode: nextCode || defaultProviderCode,
           providerName: nextName || defaultProviderName || nextCode,
@@ -373,6 +429,8 @@ function parseAirtimeDiscounts(raw: Record<string, unknown>): LiveCatalogPlan[] 
     const customerDiscount = Math.max(0, Number((commission * 0.5).toFixed(2)));
     return {
       id: `airtime_${net.code}`,
+      apiProvider: "CLUBKONNECT",
+      apiProviderName: "ClubKonnect",
       serviceType: "AIRTIME",
       providerCode: net.code,
       providerName: net.name,
@@ -411,6 +469,8 @@ function parseElectricityDiscos(raw: Record<string, unknown>): LiveCatalogPlan[]
       seen.add(id);
       discovered.push({
         id: `electricity_${id}`,
+        apiProvider: "CLUBKONNECT",
+        apiProviderName: "ClubKonnect",
         serviceType: "ELECTRICITY",
         providerCode: id,
         providerName: name,
@@ -454,6 +514,8 @@ function parseElectricityDiscos(raw: Record<string, unknown>): LiveCatalogPlan[]
   ];
   return fallbackDiscos.map(([code, name]) => ({
     id: `electricity_${code}`,
+    apiProvider: "CLUBKONNECT",
+    apiProviderName: "ClubKonnect",
     serviceType: "ELECTRICITY",
     providerCode: code,
     providerName: name,
@@ -491,6 +553,8 @@ function parseBettingCompanies(raw: Record<string, unknown>): LiveCatalogPlan[] 
       seen.add(code.toLowerCase());
       discovered.push({
         id: `betting_${code.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`,
+        apiProvider: "CLUBKONNECT",
+        apiProviderName: "ClubKonnect",
         serviceType: "BETTING",
         providerCode: code,
         providerName: name,
@@ -602,6 +666,8 @@ function parseRechargeCardAvailability(
           const costKobo = Math.round(faceKobo * (1 - commPct / 100));
           items.push({
             id: `epin_${net.code}_${denom}`,
+            apiProvider: "CLUBKONNECT",
+            apiProviderName: "ClubKonnect",
             serviceType: "RECHARGE_CARD",
             providerCode: net.code,
             providerName: net.name,
@@ -733,20 +799,25 @@ function applyAdminCatalogOverrides(
   adminDocs: Array<Record<string, unknown>>,
   pricingRules: PlatformPricingRulesMap
 ): LiveCatalogPlan[] {
+  const byExactWithApi = new Map<string, Record<string, unknown>>();
   const byExact = new Map<string, Record<string, unknown>>();
   const byProvider = new Map<string, Record<string, unknown>>();
 
   for (const doc of adminDocs) {
     const svc = String(doc.serviceType || "").toUpperCase();
+    const apiProv = String(doc.apiProvider || "").toUpperCase().trim();
     const prov = String(doc.providerCode || "").trim().toLowerCase();
     const prod = String(doc.productCode || "").trim().toLowerCase();
+    if (apiProv) {
+      byExactWithApi.set(`${apiProv}|${svc}|${prov}|${prod}`, doc);
+    }
     byExact.set(`${svc}|${prov}|${prod}`, doc);
     byProvider.set(`${svc}|${prov}`, doc);
   }
 
   return livePlans
     .map((plan) => {
-      // Step 1: Apply platform-wide service pricing rule to compute selling price & profit from ClubKonnect live cost
+      // Step 1: Apply platform-wide service pricing rule to compute selling price & profit from live provider cost
       const svcKey = (plan.serviceType.toUpperCase() as SupportedServiceType);
       const rule = pricingRules[svcKey] ?? DEFAULT_SERVICE_PRICING_RULES.DATA;
       const ruled = computePlanPricingWithRule({
@@ -767,10 +838,12 @@ function applyAdminCatalogOverrides(
         hasCustomOverride: false,
       };
 
-      // Step 2: Check for explicit per-plan Admin override in /serviceCatalog
+      // Step 2: Check for explicit per-plan Admin override in /serviceCatalog (provider-scoped first, then generic)
+      const apiExactKey = `${plan.apiProvider}|${plan.serviceType}|${plan.providerCode.toLowerCase()}|${plan.productCode.toLowerCase()}`;
       const exactKey = `${plan.serviceType}|${plan.providerCode.toLowerCase()}|${plan.productCode.toLowerCase()}`;
       const provKey = `${plan.serviceType}|${plan.providerCode.toLowerCase()}`;
       const override =
+        byExactWithApi.get(apiExactKey) ||
         byExact.get(exactKey) ||
         (plan.serviceType === "AIRTIME" || plan.serviceType === "ELECTRICITY"
           ? byProvider.get(provKey) || byProvider.get(`${plan.serviceType}|all_discos`)
@@ -823,6 +896,7 @@ function applyAdminCatalogOverrides(
 
 export function invalidateLiveCatalogCache() {
   cachedCatalog = null;
+  cachedMultiBundle = null;
 }
 
 export async function getLiveStorefrontCatalog(
@@ -1002,6 +1076,347 @@ export async function getLiveStorefrontCatalog(
   return response;
 }
 
+function buildComparisonKey(plan: LiveCatalogPlan): string {
+  const svc = plan.serviceType.toUpperCase();
+  const net = plan.providerCode.toLowerCase().trim();
+  if (svc === "AIRTIME" || svc === "ELECTRICITY" || svc === "BETTING") {
+    return `${svc}|${net}`;
+  }
+  if (svc === "RECHARGE_CARD") {
+    return `${svc}|${net}|${plan.productCode.trim()}`;
+  }
+  if (svc === "DATA" || svc === "DATA_CARD") {
+    const vol = (plan.dataVolume || "").toUpperCase().replace(/\s+/g, "");
+    const cat = (plan.categoryGroup || "").toLowerCase().trim();
+    if (vol) return `${svc}|${net}|${vol}|${cat}`;
+  }
+  const cleanName = plan.productName.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 48);
+  return `${svc}|${net}|${cleanName}`;
+}
+
+function routePlansForService(
+  serviceType: SupportedServiceType,
+  ckPlans: LiveCatalogPlan[],
+  alrPlans: LiveCatalogPlan[],
+  controls: ProviderControlsConfig
+): LiveCatalogPlan[] {
+  const ckEnabled = isProviderEnabled(controls, "CLUBKONNECT");
+  const alrEnabled = isProviderEnabled(controls, "ALRAHUZDATA");
+  const activeCk = ckEnabled ? ckPlans : [];
+  const activeAlr = alrEnabled ? alrPlans : [];
+  const mode = controls.serviceRouting[serviceType] || "AUTO_CHEAPEST";
+
+  if (mode === "CLUBKONNECT") {
+    return activeCk.length > 0 ? activeCk : activeAlr;
+  }
+  if (mode === "ALRAHUZDATA") {
+    return activeAlr.length > 0 ? activeAlr : activeCk;
+  }
+
+  // AUTO_CHEAPEST: for each normalized product/network key, pick the cheapest enabled provider
+  if (activeAlr.length === 0) return activeCk;
+  if (activeCk.length === 0) return activeAlr;
+
+  const bestByKey = new Map<string, LiveCatalogPlan>();
+  for (const plan of [...activeCk, ...activeAlr]) {
+    const key = buildComparisonKey(plan);
+    const existing = bestByKey.get(key);
+    if (!existing) {
+      bestByKey.set(key, plan);
+      continue;
+    }
+    const isVariable = serviceType === "AIRTIME" || serviceType === "ELECTRICITY" || serviceType === "BETTING";
+    if (isVariable) {
+      // Higher provider commission = lower wholesale cost
+      if (plan.commissionPercent > existing.commissionPercent) {
+        bestByKey.set(key, plan);
+      }
+    } else if (plan.providerCostKobo > 0 && (existing.providerCostKobo <= 0 || plan.providerCostKobo < existing.providerCostKobo)) {
+      bestByKey.set(key, plan);
+    }
+  }
+  return Array.from(bestByKey.values());
+}
+
+/**
+ * Fetches live plans dynamically from BOTH ClubKonnect and AlrahuzData in parallel,
+ * applies global pricing rules + overrides, strictly enforces Provider ON/OFF controls
+ * and per-service routing for customer storefront delivery, and computes side-by-side
+ * Provider Comparison rows for the Admin Dashboard.
+ */
+export async function getMultiProviderCatalogBundle(
+  clubKonnect: ClubKonnectClient,
+  alrahuzData: AlrahuzDataClient,
+  forceRefresh = false
+): Promise<MultiProviderAdminCatalogBundle> {
+  const now = Date.now();
+  if (!forceRefresh && cachedMultiBundle && cachedMultiBundle.expiresAt > now) {
+    return cachedMultiBundle.data;
+  }
+
+  const [controls, pricingRules, adminCatalogSnap, ckCatalogResult, alrRawResult] = await Promise.all([
+    getProviderControls(),
+    getPlatformPricingRules(),
+    db.collection("serviceCatalog").get(),
+    clubKonnect.isConfigured
+      ? getLiveStorefrontCatalog(clubKonnect, forceRefresh).catch(() => null)
+      : Promise.resolve(null),
+    alrahuzData.isConfigured
+      ? alrahuzData.fetchUserAndCatalog().catch(() => null)
+      : Promise.resolve(null),
+  ]);
+
+  const adminDocs = adminCatalogSnap.docs.map((d) => ({ id: d.id, ...d.data() })) as Array<Record<string, unknown>>;
+
+  const emptyGroup = (msg: string): LiveServiceAvailabilityGroup => ({
+    available: false,
+    statusMessage: msg,
+    items: [],
+  });
+
+  const ckCat: LiveStorefrontCatalogResponse = ckCatalogResult || {
+    status: "unconfigured",
+    fetchedAt: new Date().toISOString(),
+    clubKonnectConnected: false,
+    totalPlans: 0,
+    airtime: [],
+    data: [],
+    electricity: [],
+    cableTv: [],
+    waec: [],
+    jamb: [],
+    rechargeCards: emptyGroup("Recharge Card service is currently unavailable."),
+    dataCards: emptyGroup("Data Card service is currently unavailable."),
+    broadband: [],
+    betting: [],
+  };
+
+  const alrReachable = Boolean(alrRawResult && Number(alrRawResult.__httpStatus || 200) < 400);
+  const parsedAlr = alrReachable && alrRawResult ? parseAlrahuzUserCatalog(alrRawResult) : null;
+
+  const alrAirtime = parsedAlr ? applyAdminCatalogOverrides(parsedAlr.airtime, adminDocs, pricingRules) : [];
+  const alrData = parsedAlr ? applyAdminCatalogOverrides(parsedAlr.data, adminDocs, pricingRules) : [];
+  const alrCable = parsedAlr ? applyAdminCatalogOverrides(parsedAlr.cableTv, adminDocs, pricingRules) : [];
+  const alrElectricity = parsedAlr ? applyAdminCatalogOverrides(parsedAlr.electricity, adminDocs, pricingRules) : [];
+  const alrWaec = parsedAlr ? applyAdminCatalogOverrides(parsedAlr.waec, adminDocs, pricingRules) : [];
+  const alrJamb = parsedAlr ? applyAdminCatalogOverrides(parsedAlr.jamb, adminDocs, pricingRules) : [];
+  const alrRecharge = parsedAlr ? applyAdminCatalogOverrides(parsedAlr.rechargeCards, adminDocs, pricingRules) : [];
+
+  const sortData = (list: LiveCatalogPlan[]) =>
+    [...list].sort(
+      (a, b) =>
+        a.providerCode.localeCompare(b.providerCode) ||
+        categoryRank(DATA_CATEGORY_ORDER, a.categoryGroup) - categoryRank(DATA_CATEGORY_ORDER, b.categoryGroup) ||
+        a.sellingPriceKobo - b.sellingPriceKobo
+    );
+
+  const sortCable = (list: LiveCatalogPlan[]) =>
+    [...list].sort((a, b) => a.providerCode.localeCompare(b.providerCode) || a.sellingPriceKobo - b.sellingPriceKobo);
+
+  // Customer-ready routed catalog (STRICTLY excludes disabled providers!)
+  const routedAirtime = routePlansForService("AIRTIME", ckCat.airtime, alrAirtime, controls);
+  const routedData = sortData(routePlansForService("DATA", ckCat.data, alrData, controls));
+  const routedElectricity = routePlansForService("ELECTRICITY", ckCat.electricity, alrElectricity, controls);
+  const routedCable = sortCable(routePlansForService("CABLE_TV", ckCat.cableTv, alrCable, controls));
+  const routedWaec = routePlansForService("WAEC_PIN", ckCat.waec, alrWaec, controls);
+  const routedJamb = routePlansForService("JAMB_PIN", ckCat.jamb, alrJamb, controls);
+  const routedRechargeItems = routePlansForService("RECHARGE_CARD", ckCat.rechargeCards.items, alrRecharge, controls);
+  const routedDataCardItems = isProviderEnabled(controls, "CLUBKONNECT") ? ckCat.dataCards.items : [];
+  const routedBroadband = isProviderEnabled(controls, "CLUBKONNECT") ? ckCat.broadband : [];
+  const routedBetting = isProviderEnabled(controls, "CLUBKONNECT") ? ckCat.betting : [];
+
+  const routedTotal =
+    routedAirtime.length +
+    routedData.length +
+    routedElectricity.length +
+    routedCable.length +
+    routedWaec.length +
+    routedJamb.length +
+    routedRechargeItems.length +
+    routedDataCardItems.length +
+    routedBroadband.length +
+    routedBetting.length;
+
+  const fetchedAt = new Date().toISOString();
+
+  const routedCatalog: LiveStorefrontCatalogResponse = {
+    status: routedTotal > 0 ? "success" : "no_active_providers",
+    fetchedAt,
+    clubKonnectConnected: ckCat.clubKonnectConnected && isProviderEnabled(controls, "CLUBKONNECT"),
+    alrahuzDataConnected: alrReachable && isProviderEnabled(controls, "ALRAHUZDATA"),
+    totalPlans: routedTotal,
+    airtime: routedAirtime,
+    data: routedData,
+    electricity: routedElectricity,
+    cableTv: routedCable,
+    waec: routedWaec,
+    jamb: routedJamb,
+    rechargeCards: {
+      available: routedRechargeItems.some((i) => i.available),
+      statusMessage: routedRechargeItems.some((i) => i.available)
+        ? `Recharge Card e-PIN printing is available (${routedRechargeItems.filter((i) => i.available).length} denominations ready).`
+        : "Recharge Card e-PIN service is currently unavailable.",
+      items: routedRechargeItems,
+    },
+    dataCards: {
+      available: routedDataCardItems.some((i) => i.available),
+      statusMessage: routedDataCardItems.some((i) => i.available)
+        ? ckCat.dataCards.statusMessage
+        : "Data Card e-PIN service is currently unavailable.",
+      items: routedDataCardItems,
+    },
+    broadband: routedBroadband,
+    betting: routedBetting,
+  };
+
+  // Full combined catalog for Admin Pricing inspection (both providers visible with provider badges)
+  const allAirtime = [...ckCat.airtime, ...alrAirtime];
+  const allData = sortData([...ckCat.data, ...alrData]);
+  const allElectricity = [...ckCat.electricity, ...alrElectricity];
+  const allCable = sortCable([...ckCat.cableTv, ...alrCable]);
+  const allWaec = [...ckCat.waec, ...alrWaec];
+  const allJamb = [...ckCat.jamb, ...alrJamb];
+  const allRecharge = [...ckCat.rechargeCards.items, ...alrRecharge];
+  const allDataCards = [...ckCat.dataCards.items];
+  const allBroadband = [...ckCat.broadband];
+  const allBetting = [...ckCat.betting];
+
+  const allTotal =
+    allAirtime.length +
+    allData.length +
+    allElectricity.length +
+    allCable.length +
+    allWaec.length +
+    allJamb.length +
+    allRecharge.length +
+    allDataCards.length +
+    allBroadband.length +
+    allBetting.length;
+
+  const allProvidersCatalog: LiveStorefrontCatalogResponse = {
+    status: "success",
+    fetchedAt,
+    clubKonnectConnected: ckCat.clubKonnectConnected,
+    alrahuzDataConnected: alrReachable,
+    totalPlans: allTotal,
+    airtime: allAirtime,
+    data: allData,
+    electricity: allElectricity,
+    cableTv: allCable,
+    waec: allWaec,
+    jamb: allJamb,
+    rechargeCards: {
+      available: allRecharge.some((i) => i.available),
+      statusMessage: `${allRecharge.length} recharge card e-PIN offers across providers.`,
+      items: allRecharge,
+    },
+    dataCards: ckCat.dataCards,
+    broadband: allBroadband,
+    betting: allBetting,
+  };
+
+  // Build side-by-side Provider Comparison rows with Best Value highlighting
+  const allFlatPlans: LiveCatalogPlan[] = [
+    ...allAirtime,
+    ...allData,
+    ...allCable,
+    ...allElectricity,
+    ...allRecharge,
+    ...allDataCards,
+    ...allWaec,
+    ...allJamb,
+    ...allBroadband,
+    ...allBetting,
+  ];
+
+  const bestMetricByKey = new Map<string, number>();
+  for (const plan of allFlatPlans) {
+    if (!plan.available || !isProviderEnabled(controls, plan.apiProvider)) continue;
+    const key = buildComparisonKey(plan);
+    const isVariable =
+      plan.serviceType === "AIRTIME" || plan.serviceType === "ELECTRICITY" || plan.serviceType === "BETTING";
+    const score = isVariable ? plan.netProfitKobo : -plan.providerCostKobo;
+    const prev = bestMetricByKey.get(key);
+    if (prev === undefined || score > prev) {
+      bestMetricByKey.set(key, score);
+    }
+  }
+
+  const providerComparison: ProviderComparisonRow[] = allFlatPlans.map((plan) => {
+    const key = buildComparisonKey(plan);
+    const provEnabled = isProviderEnabled(controls, plan.apiProvider);
+    const isVariable =
+      plan.serviceType === "AIRTIME" || plan.serviceType === "ELECTRICITY" || plan.serviceType === "BETTING";
+    const score = isVariable ? plan.netProfitKobo : -plan.providerCostKobo;
+    const bestScore = bestMetricByKey.get(key);
+    return {
+      id: `${plan.apiProvider}_${plan.id}`,
+      apiProvider: plan.apiProvider,
+      apiProviderName: PROVIDER_DISPLAY_NAMES[plan.apiProvider],
+      serviceType: plan.serviceType,
+      providerCode: plan.providerCode,
+      providerName: plan.providerName,
+      productCode: plan.productCode,
+      productName: plan.productName,
+      categoryGroup: plan.categoryGroup,
+      available: plan.available,
+      providerEnabled: provEnabled,
+      providerCostKobo: plan.providerCostKobo,
+      sellingPriceKobo: plan.sellingPriceKobo,
+      feeKobo: plan.feeKobo,
+      expectedProfitKobo: plan.netProfitKobo,
+      profitMarginPercent: plan.profitMarginPercent,
+      commissionPercent: plan.commissionPercent,
+      discountPercent: plan.discountPercent,
+      comparisonKey: key,
+      isBestValue: provEnabled && plan.available && bestScore !== undefined && score >= bestScore,
+    };
+  });
+
+  const alrPlanCount =
+    alrAirtime.length +
+    alrData.length +
+    alrCable.length +
+    alrElectricity.length +
+    alrWaec.length +
+    alrJamb.length +
+    alrRecharge.length;
+
+  const providersSummary: ProviderStatusSummary[] = [
+    {
+      id: "CLUBKONNECT",
+      name: PROVIDER_DISPLAY_NAMES.CLUBKONNECT,
+      configured: clubKonnect.isConfigured,
+      enabled: isProviderEnabled(controls, "CLUBKONNECT"),
+      reachable: ckCat.clubKonnectConnected,
+      livePlanCount: ckCat.totalPlans,
+      balanceNaira: null,
+    },
+    {
+      id: "ALRAHUZDATA",
+      name: PROVIDER_DISPLAY_NAMES.ALRAHUZDATA,
+      configured: alrahuzData.isConfigured,
+      enabled: isProviderEnabled(controls, "ALRAHUZDATA"),
+      reachable: alrReachable,
+      livePlanCount: alrPlanCount,
+      balanceNaira: parsedAlr?.walletBalanceNaira !== null && parsedAlr?.walletBalanceNaira !== undefined
+        ? parsedAlr.walletBalanceNaira.toFixed(2)
+        : null,
+    },
+  ];
+
+  const bundle: MultiProviderAdminCatalogBundle = {
+    routedCatalog,
+    allProvidersCatalog,
+    providerComparison,
+    providersSummary,
+    providerControls: controls,
+  };
+
+  cachedMultiBundle = { expiresAt: now + CACHE_TTL_MS, data: bundle };
+  return bundle;
+}
+
 /**
  * Pure projection for Super Admin Direct API Mode (msagirgroup@gmail.com only).
  * Never mutates the shared retail cache; maps every plan to exact wholesale API cost,
@@ -1048,12 +1463,38 @@ export async function findAuthorizedLiveProduct(
   clubKonnect: ClubKonnectClient,
   serviceType: string,
   providerCode: string,
-  productCode: string
-): Promise<{ pricingDoc: CatalogPricingDoc | null; available: boolean; unavailableReason?: string }> {
-  const catalog = await getLiveStorefrontCatalog(clubKonnect, false);
+  productCode: string,
+  alrahuzData?: AlrahuzDataClient
+): Promise<{
+  pricingDoc: CatalogPricingDoc | null;
+  available: boolean;
+  unavailableReason?: string;
+  apiProvider: ApiProviderId | null;
+}> {
   const svc = serviceType.toUpperCase();
   const prov = providerCode.trim().toLowerCase();
   const prod = productCode.trim().toLowerCase();
+
+  let catalog: LiveStorefrontCatalogResponse;
+  let controls: ProviderControlsConfig;
+  if (alrahuzData) {
+    const bundle = await getMultiProviderCatalogBundle(clubKonnect, alrahuzData, false);
+    catalog = bundle.routedCatalog;
+    controls = bundle.providerControls;
+  } else {
+    catalog = await getLiveStorefrontCatalog(clubKonnect, false);
+    controls = await getProviderControls();
+  }
+
+  // Strictly block if no enabled provider exists for this request
+  if (!isProviderEnabled(controls, "CLUBKONNECT") && !isProviderEnabled(controls, "ALRAHUZDATA")) {
+    return {
+      pricingDoc: null,
+      available: false,
+      unavailableReason: "All fulfillment API providers are currently paused by the administrator.",
+      apiProvider: null,
+    };
+  }
 
   if (svc === "RECHARGE_CARD") {
     if (!catalog.rechargeCards.available) {
@@ -1061,6 +1502,7 @@ export async function findAuthorizedLiveProduct(
         pricingDoc: null,
         available: false,
         unavailableReason: catalog.rechargeCards.statusMessage,
+        apiProvider: null,
       };
     }
     const found = catalog.rechargeCards.items.find(
@@ -1071,9 +1513,10 @@ export async function findAuthorizedLiveProduct(
         pricingDoc: null,
         available: false,
         unavailableReason: "Selected recharge card denomination is currently out of stock.",
+        apiProvider: null,
       };
     }
-    return { pricingDoc: found, available: true };
+    return { pricingDoc: found, available: true, apiProvider: found.apiProvider };
   }
 
   if (svc === "DATA_CARD") {
@@ -1082,6 +1525,7 @@ export async function findAuthorizedLiveProduct(
         pricingDoc: null,
         available: false,
         unavailableReason: catalog.dataCards.statusMessage,
+        apiProvider: null,
       };
     }
     const found = catalog.dataCards.items.find(
@@ -1092,9 +1536,10 @@ export async function findAuthorizedLiveProduct(
         pricingDoc: null,
         available: false,
         unavailableReason: "Selected data card plan is currently out of stock.",
+        apiProvider: null,
       };
     }
-    return { pricingDoc: found, available: true };
+    return { pricingDoc: found, available: true, apiProvider: found.apiProvider };
   }
 
   const pool: LiveCatalogPlan[] =
@@ -1122,5 +1567,33 @@ export async function findAuthorizedLiveProduct(
     (prod ? pool.find((i) => i.productCode.toLowerCase() === prod) : undefined) ||
     (isVariableSvc ? pool.find((i) => i.providerCode.toLowerCase() === prov) : undefined);
 
-  return { pricingDoc: matched || null, available: true };
+  if (matched) {
+    if (!isProviderEnabled(controls, matched.apiProvider)) {
+      return {
+        pricingDoc: null,
+        available: false,
+        unavailableReason: "The provider for this product is currently disabled.",
+        apiProvider: null,
+      };
+    }
+    return { pricingDoc: matched, available: true, apiProvider: matched.apiProvider };
+  }
+
+  // Fallback for variable-amount utilities when an enabled provider exists
+  const fallbackApi: ApiProviderId | null = isProviderEnabled(controls, "CLUBKONNECT") && clubKonnect.isConfigured
+    ? "CLUBKONNECT"
+    : isProviderEnabled(controls, "ALRAHUZDATA") && alrahuzData?.isConfigured
+      ? "ALRAHUZDATA"
+      : null;
+
+  if (!fallbackApi) {
+    return {
+      pricingDoc: null,
+      available: false,
+      unavailableReason: "No active API provider is enabled for this service.",
+      apiProvider: null,
+    };
+  }
+
+  return { pricingDoc: null, available: true, apiProvider: fallbackApi };
 }

@@ -3,14 +3,24 @@ import crypto from "crypto";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { db, logProviderEvent } from "./config";
 import { ClubKonnectClient } from "./clubKonnectClient";
+import { AlrahuzDataClient } from "./alrahuzDataClient";
 import { FlutterwaveClient } from "./flutterwaveClient";
 import {
-  getLiveStorefrontCatalog,
+  getMultiProviderCatalogBundle,
   getPlatformPricingRules,
   invalidateLiveCatalogCache,
   savePlatformPricingRules,
 } from "./liveCatalogEngine";
-import { ServicePricingRule, SupportedServiceType } from "./pricingEngine";
+import {
+  ServicePricingRule,
+  SupportedServiceType,
+  validateAdminPricingOverride,
+} from "./pricingEngine";
+import {
+  getProviderControls,
+  isProviderEnabled,
+  saveProviderControls,
+} from "./providerControls";
 
 export interface AdminAuthedRequest extends Request {
   uid?: string;
@@ -23,6 +33,7 @@ export interface AdminRoutesDeps {
   requireAuth: (req: AdminAuthedRequest, res: Response, next: NextFunction) => Promise<void>;
   requireAdmin: (req: AdminAuthedRequest, res: Response, next: NextFunction) => void;
   clubKonnect: ClubKonnectClient;
+  alrahuzData: AlrahuzDataClient;
   flutterwave: FlutterwaveClient;
   reconcileTransactionWithClubKonnect: (reference: string) => Promise<{
     notFound: boolean;
@@ -100,7 +111,7 @@ function serializeTransferDoc(id: string, data: Record<string, unknown>) {
 }
 
 export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminRoutesDeps) {
-  const { requireAuth, requireAdmin, clubKonnect, flutterwave, reconcileTransactionWithClubKonnect } = deps;
+  const { requireAuth, requireAdmin, clubKonnect, alrahuzData, flutterwave, reconcileTransactionWithClubKonnect } = deps;
 
   // =========================================================================
   // 1. LIVE NIGERIAN BANKS & ACCOUNT RESOLUTION (Flutterwave v3)
@@ -428,25 +439,150 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
   );
 
   // =========================================================================
-  // 5. LIVE PRICING MATRIX, SERVICE MARKUP/DISCOUNT RULES & PER-PLAN OVERRIDES
+  // 4B. API PROVIDER CONTROLS (ON/OFF SWITCHES + SERVICE ROUTING)
+  // =========================================================================
+  app.get("/api/v1/admin/providers/controls", requireAuth, requireAdmin, async (_req: AdminAuthedRequest, res: Response) => {
+    try {
+      const [controls, ckBalRes, alrBalRes, bundle] = await Promise.allSettled([
+        getProviderControls(),
+        clubKonnect.isConfigured ? clubKonnect.getWalletBalance() : Promise.resolve(null),
+        alrahuzData.isConfigured ? alrahuzData.getWalletBalance() : Promise.resolve(null),
+        getMultiProviderCatalogBundle(clubKonnect, alrahuzData, false),
+      ]);
+
+      const resolvedControls = controls.status === "fulfilled" ? controls.value : await getProviderControls();
+      let ckBalanceNaira: string | null = null;
+      let ckReachable = false;
+      if (ckBalRes.status === "fulfilled" && ckBalRes.value) {
+        const raw = String(ckBalRes.value.balance ?? ckBalRes.value.Balance ?? "").replace(/[^0-9.]/g, "");
+        if (raw && Number.isFinite(Number(raw))) {
+          ckBalanceNaira = Number(raw).toFixed(2);
+          ckReachable = true;
+        }
+      }
+
+      let alrBalanceNaira: string | null = null;
+      let alrReachable = false;
+      if (alrBalRes.status === "fulfilled" && alrBalRes.value) {
+        alrBalanceNaira = alrBalRes.value.balanceNaira.toFixed(2);
+        alrReachable = true;
+      }
+
+      const summaryFromBundle = bundle.status === "fulfilled" ? bundle.value.providersSummary : [];
+      const ckCount = summaryFromBundle.find((p) => p.id === "CLUBKONNECT")?.livePlanCount ?? 0;
+      const alrCount = summaryFromBundle.find((p) => p.id === "ALRAHUZDATA")?.livePlanCount ?? 0;
+
+      res.json({
+        status: "success",
+        providers: [
+          {
+            id: "CLUBKONNECT",
+            name: "ClubKonnect",
+            configured: clubKonnect.isConfigured,
+            enabled: isProviderEnabled(resolvedControls, "CLUBKONNECT"),
+            reachable: ckReachable,
+            livePlanCount: ckCount,
+            balanceNaira: ckBalanceNaira,
+          },
+          {
+            id: "ALRAHUZDATA",
+            name: "AlrahuzData",
+            configured: alrahuzData.isConfigured,
+            enabled: isProviderEnabled(resolvedControls, "ALRAHUZDATA"),
+            reachable: alrReachable,
+            livePlanCount: alrCount,
+            balanceNaira: alrBalanceNaira,
+          },
+        ],
+        serviceRouting: resolvedControls.serviceRouting,
+        updatedBy: resolvedControls.updatedBy || null,
+        updatedAtIso: resolvedControls.updatedAtIso || null,
+      });
+    } catch (err) {
+      res.status(400).json({ status: "error", message: (err as Error).message });
+    }
+  });
+
+  app.post("/api/v1/admin/providers/controls", requireAuth, requireAdmin, async (req: AdminAuthedRequest, res: Response) => {
+    try {
+      const body = (req.body || {}) as Record<string, unknown>;
+      const patchProviders: Partial<Record<"CLUBKONNECT" | "ALRAHUZDATA", { enabled?: boolean }>> = {};
+
+      if (body.providers && typeof body.providers === "object") {
+        const provObj = body.providers as Record<string, Record<string, unknown>>;
+        if (typeof provObj.CLUBKONNECT?.enabled === "boolean") {
+          patchProviders.CLUBKONNECT = { enabled: provObj.CLUBKONNECT.enabled as boolean };
+        }
+        if (typeof provObj.ALRAHUZDATA?.enabled === "boolean") {
+          patchProviders.ALRAHUZDATA = { enabled: provObj.ALRAHUZDATA.enabled as boolean };
+        }
+      }
+      if (typeof body.clubKonnectEnabled === "boolean") {
+        patchProviders.CLUBKONNECT = { enabled: body.clubKonnectEnabled };
+      }
+      if (typeof body.alrahuzDataEnabled === "boolean") {
+        patchProviders.ALRAHUZDATA = { enabled: body.alrahuzDataEnabled };
+      }
+
+      const patchRouting =
+        body.serviceRouting && typeof body.serviceRouting === "object"
+          ? (body.serviceRouting as Partial<Record<string, string>>)
+          : undefined;
+
+      const updated = await saveProviderControls(
+        { providers: patchProviders, serviceRouting: patchRouting },
+        req.uid!
+      );
+      invalidateLiveCatalogCache();
+
+      await logProviderEvent({
+        provider: "SYSTEM",
+        action: "ADMIN_UPDATE_PROVIDER_CONTROLS",
+        reference: `PROVCTL-${Date.now()}`,
+        statusCode: "200",
+        outcome: "SUCCESS",
+        message: `Admin ${req.email || req.uid} updated provider switches: ClubKonnect=${updated.providers.CLUBKONNECT.enabled ? "ON" : "OFF"}, AlrahuzData=${updated.providers.ALRAHUZDATA.enabled ? "ON" : "OFF"}.`,
+      });
+
+      const bundle = await getMultiProviderCatalogBundle(clubKonnect, alrahuzData, true);
+
+      res.json({
+        status: "success",
+        providers: bundle.providersSummary,
+        serviceRouting: updated.serviceRouting,
+        updatedBy: updated.updatedBy || null,
+        updatedAtIso: updated.updatedAtIso || null,
+        message: `Provider controls updated: ClubKonnect is ${updated.providers.CLUBKONNECT.enabled ? "ON" : "OFF"}, AlrahuzData is ${updated.providers.ALRAHUZDATA.enabled ? "ON" : "OFF"}.`,
+      });
+    } catch (err) {
+      res.status(400).json({ status: "error", message: (err as Error).message });
+    }
+  });
+
+  // =========================================================================
+  // 5. LIVE MULTI-PROVIDER PRICING MATRIX, COMPARISON, RULES & OVERRIDES
   // =========================================================================
   app.get("/api/v1/admin/pricing/matrix", requireAuth, requireAdmin, async (req: AdminAuthedRequest, res: Response) => {
     try {
       const forceRefresh = req.query.refresh === "true";
-      const [rulesMap, catalog] = await Promise.all([
+      const [rulesMap, bundle] = await Promise.all([
         getPlatformPricingRules(),
-        getLiveStorefrontCatalog(clubKonnect, forceRefresh),
+        getMultiProviderCatalogBundle(clubKonnect, alrahuzData, forceRefresh),
       ]);
 
       const rules = ORDERED_SERVICE_TYPES.map((svc) => rulesMap[svc]);
 
       res.json({
         status: "success",
-        fetchedAt: catalog.fetchedAt,
-        clubKonnectConnected: catalog.clubKonnectConnected,
-        totalPlans: catalog.totalPlans,
+        fetchedAt: bundle.allProvidersCatalog.fetchedAt,
+        clubKonnectConnected: bundle.allProvidersCatalog.clubKonnectConnected,
+        alrahuzDataConnected: bundle.allProvidersCatalog.alrahuzDataConnected === true,
+        totalPlans: bundle.allProvidersCatalog.totalPlans,
         rules,
-        catalog,
+        catalog: bundle.allProvidersCatalog,
+        providerComparison: bundle.providerComparison,
+        providersSummary: bundle.providersSummary,
+        serviceRouting: bundle.providerControls.serviceRouting,
       });
     } catch (err) {
       res.status(400).json({ status: "error", message: (err as Error).message });
@@ -475,17 +611,30 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
       }
 
       const savedMap = await savePlatformPricingRules(incoming, req.uid!);
-      const catalog = await getLiveStorefrontCatalog(clubKonnect, true);
+      const bundle = await getMultiProviderCatalogBundle(clubKonnect, alrahuzData, true);
       const rules = ORDERED_SERVICE_TYPES.map((svc) => savedMap[svc]);
+
+      await logProviderEvent({
+        provider: "SYSTEM",
+        action: "ADMIN_UPDATE_PRICING_RULES",
+        reference: `RULES-${Date.now()}`,
+        statusCode: "200",
+        outcome: "SUCCESS",
+        message: `Admin ${req.email || req.uid} updated category pricing rules for ${Object.keys(incoming).join(", ")}.`,
+      });
 
       res.json({
         status: "success",
-        fetchedAt: catalog.fetchedAt,
-        clubKonnectConnected: catalog.clubKonnectConnected,
-        totalPlans: catalog.totalPlans,
+        fetchedAt: bundle.allProvidersCatalog.fetchedAt,
+        clubKonnectConnected: bundle.allProvidersCatalog.clubKonnectConnected,
+        alrahuzDataConnected: bundle.allProvidersCatalog.alrahuzDataConnected === true,
+        totalPlans: bundle.allProvidersCatalog.totalPlans,
         rules,
-        catalog,
-        message: `Updated pricing rule(s) for ${Object.keys(incoming).join(", ")} and recalculated ${catalog.totalPlans} live plans.`,
+        catalog: bundle.allProvidersCatalog,
+        providerComparison: bundle.providerComparison,
+        providersSummary: bundle.providersSummary,
+        serviceRouting: bundle.providerControls.serviceRouting,
+        message: `Updated pricing rule(s) for ${Object.keys(incoming).join(", ")} and recalculated ${bundle.allProvidersCatalog.totalPlans} live plans.`,
       });
     } catch (err) {
       res.status(400).json({ status: "error", message: (err as Error).message });
@@ -495,6 +644,8 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
   app.post("/api/v1/admin/pricing/override", requireAuth, requireAdmin, async (req: AdminAuthedRequest, res: Response) => {
     try {
       const serviceType = String(req.body?.serviceType || "").toUpperCase().trim();
+      const apiProviderRaw = String(req.body?.apiProvider || "").toUpperCase().trim();
+      const apiProvider = apiProviderRaw === "ALRAHUZDATA" || apiProviderRaw === "CLUBKONNECT" ? apiProviderRaw : "";
       const providerCode = String(req.body?.providerCode || "").trim();
       const providerName = String(req.body?.providerName || providerCode).trim();
       const productCode = String(req.body?.productCode || "").trim();
@@ -509,25 +660,31 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
         return;
       }
 
+      const idPrefix = apiProvider ? `${apiProvider}_${serviceType}` : serviceType;
       const docId = sanitizeId(
-        `${serviceType}_${providerCode}_${productCode}`.toLowerCase(),
+        `${idPrefix}_${providerCode}_${productCode}`.toLowerCase(),
         `override_${Date.now()}`
       );
       const docRef = db.collection("serviceCatalog").doc(docId);
 
-      // Also check if an existing /serviceCatalog doc with different ID matches this exact triple
+      // Also check if an existing /serviceCatalog doc with different ID matches this tuple
       const matchingSnap = await db
         .collection("serviceCatalog")
         .where("serviceType", "==", serviceType)
         .where("providerCode", "==", providerCode)
         .where("productCode", "==", productCode)
-        .limit(5)
+        .limit(10)
         .get();
+
+      const matchingDocs = matchingSnap.docs.filter((d) => {
+        const dApi = String(d.data()?.apiProvider || "").toUpperCase().trim();
+        return !apiProvider || !dApi || dApi === apiProvider;
+      });
 
       if (clearOverride) {
         const batch = db.batch();
         batch.delete(docRef);
-        matchingSnap.docs.forEach((d) => batch.delete(d.ref));
+        matchingDocs.forEach((d) => batch.delete(d.ref));
         await batch.commit();
         invalidateLiveCatalogCache();
         res.json({
@@ -537,28 +694,35 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
         return;
       }
 
-      const targetRef = !matchingSnap.empty ? matchingSnap.docs[0].ref : docRef;
+      // Strict backend validation against invalid, corrupt, or accidental loss-making prices
+      const validated = validateAdminPricingOverride({
+        serviceType,
+        providerCostKobo: Number(req.body?.providerCostKobo ?? 0),
+        sellingPriceKobo: Number(req.body?.sellingPriceKobo ?? 0),
+        feeKobo: Number(req.body?.feeKobo ?? 0),
+        discountPercent: Number(req.body?.discountPercent ?? 0),
+        commissionPercent: Number(req.body?.commissionPercent ?? 0),
+        allowBelowCost: Boolean(req.body?.allowBelowCost),
+      });
+
+      const targetRef = matchingDocs.length > 0 ? matchingDocs[0].ref : docRef;
       const existingSnap = await targetRef.get();
-      const providerCostKobo = Math.max(0, Math.round(Number(req.body?.providerCostKobo ?? 0)));
-      const sellingPriceKobo = Math.max(0, Math.round(Number(req.body?.sellingPriceKobo ?? 0)));
-      const feeKobo = Math.max(0, Math.round(Number(req.body?.feeKobo ?? 0)));
-      const discountPercent = Math.min(50, Math.max(0, Number(req.body?.discountPercent ?? 0)));
-      const commissionPercent = Math.min(50, Math.max(0, Number(req.body?.commissionPercent ?? 0)));
       const enabled = req.body?.enabled !== false;
 
       const payload: Record<string, unknown> = {
         serviceType,
+        ...(apiProvider ? { apiProvider } : {}),
         providerCode,
         providerName,
         productCode,
         productName,
         validity: String(req.body?.validity || ""),
         dataVolume: String(req.body?.dataVolume || ""),
-        providerCostKobo,
-        sellingPriceKobo,
-        feeKobo,
-        discountPercent,
-        commissionPercent,
+        providerCostKobo: validated.providerCostKobo,
+        sellingPriceKobo: validated.sellingPriceKobo,
+        feeKobo: validated.feeKobo,
+        discountPercent: validated.discountPercent,
+        commissionPercent: validated.commissionPercent,
         enabled,
         updatedBy: req.uid,
         updatedAt: FieldValue.serverTimestamp(),
@@ -570,9 +734,18 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
       await targetRef.set(payload, { merge: true });
       invalidateLiveCatalogCache();
 
+      await logProviderEvent({
+        provider: "SYSTEM",
+        action: "ADMIN_PLAN_PRICE_OVERRIDE",
+        reference: docId,
+        statusCode: "200",
+        outcome: "SUCCESS",
+        message: `Admin ${req.email || req.uid} set override on ${productName}: sell=₦${(validated.sellingPriceKobo / 100).toFixed(2)}, fee=₦${(validated.feeKobo / 100).toFixed(2)}.`,
+      });
+
       res.json({
         status: "success",
-        message: `Saved live pricing override for ${productName}.`,
+        message: `Saved validated pricing override for ${productName}.`,
       });
     } catch (err) {
       res.status(400).json({ status: "error", message: (err as Error).message });
@@ -634,21 +807,24 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
   );
 
   // =========================================================================
-  // 7. EXECUTIVE OVERVIEW METRICS (Profit, Volume, Solvency, Service Breakdown)
+  // 7. EXECUTIVE PROFIT DASHBOARD METRICS (Daily / Weekly / Monthly / All Time)
   // =========================================================================
   app.get("/api/v1/admin/overview-metrics", requireAuth, requireAdmin, async (_req: AdminAuthedRequest, res: Response) => {
     try {
-      const [usersSnap, txSnap, ticketsSnap, ckBalRes, flwBalRes] = await Promise.allSettled([
+      const [usersSnap, txSnap, ticketsSnap, ckBalRes, alrBalRes, flwBalRes, controlsRes] = await Promise.allSettled([
         db.collection("users").get(),
         db.collection("transactions").get(),
         db.collection("supportTickets").where("status", "in", ["OPEN", "IN_PROGRESS"]).get(),
         clubKonnect.isConfigured ? clubKonnect.getWalletBalance() : Promise.resolve(null),
+        alrahuzData.isConfigured ? alrahuzData.getWalletBalance() : Promise.resolve(null),
         flutterwave.isConfigured ? flutterwave.getNgnBalance() : Promise.resolve(null),
+        getProviderControls(),
       ]);
 
       const usersDocs = usersSnap.status === "fulfilled" ? usersSnap.value.docs : [];
       const txDocs = txSnap.status === "fulfilled" ? txSnap.value.docs : [];
       const openTicketsCount = ticketsSnap.status === "fulfilled" ? ticketsSnap.value.size : 0;
+      const controls = controlsRes.status === "fulfilled" ? controlsRes.value : await getProviderControls();
 
       let totalUsers = 0;
       let individualUsers = 0;
@@ -674,30 +850,103 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
       startOfToday.setUTCHours(0, 0, 0, 0);
       const todayMs = startOfToday.getTime();
       const last7dMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+      const last30dMs = nowMs - 30 * 24 * 60 * 60 * 1000;
 
-      let allTimeVolumeKobo = 0;
-      let allTimeProfitKobo = 0;
+      interface ServiceBucketAcc {
+        serviceType: string;
+        label: string;
+        txCount: number;
+        volumeKobo: number;
+        providerCostKobo: number;
+        profitKobo: number;
+        feesKobo: number;
+      }
+
+      interface PeriodAcc {
+        totalSalesKobo: number;
+        providerCostsKobo: number;
+        grossProfitKobo: number;
+        paymentFeesKobo: number;
+        refundsKobo: number;
+        refundCount: number;
+        txCount: number;
+        byService: Map<string, ServiceBucketAcc>;
+      }
+
+      const newPeriodAcc = (): PeriodAcc => ({
+        totalSalesKobo: 0,
+        providerCostsKobo: 0,
+        grossProfitKobo: 0,
+        paymentFeesKobo: 0,
+        refundsKobo: 0,
+        refundCount: 0,
+        txCount: 0,
+        byService: new Map<string, ServiceBucketAcc>(),
+      });
+
+      const periods = {
+        daily: newPeriodAcc(),
+        weekly: newPeriodAcc(),
+        monthly: newPeriodAcc(),
+        allTime: newPeriodAcc(),
+      };
+
+      const recordInPeriod = (
+        acc: PeriodAcc,
+        type: string,
+        status: string,
+        totalKobo: number,
+        providerCostKobo: number,
+        marginKobo: number,
+        feeKobo: number
+      ) => {
+        if (status === "REVERSED") {
+          acc.refundsKobo += totalKobo;
+          acc.refundCount += 1;
+          return;
+        }
+        if (status !== "SUCCESSFUL") return;
+
+        acc.txCount += 1;
+        acc.paymentFeesKobo += feeKobo;
+
+        if (type !== "WALLET_FUNDING") {
+          acc.totalSalesKobo += totalKobo;
+          acc.providerCostsKobo += providerCostKobo;
+          acc.grossProfitKobo += marginKobo;
+        }
+
+        const bucket = acc.byService.get(type) ?? {
+          serviceType: type,
+          label: SERVICE_LABELS[type] || type,
+          txCount: 0,
+          volumeKobo: 0,
+          providerCostKobo: 0,
+          profitKobo: 0,
+          feesKobo: 0,
+        };
+        bucket.txCount += 1;
+        bucket.volumeKobo += totalKobo;
+        bucket.providerCostKobo += type === "WALLET_FUNDING" ? 0 : providerCostKobo;
+        bucket.profitKobo += marginKobo;
+        bucket.feesKobo += feeKobo;
+        acc.byService.set(type, bucket);
+      };
+
       let allTimeTxCount = 0;
-      let todayVolumeKobo = 0;
-      let todayProfitKobo = 0;
-      let todayTxCount = 0;
-      let last7dVolumeKobo = 0;
-      let last7dProfitKobo = 0;
-      let last7dTxCount = 0;
-
       let successfulCount = 0;
       let pendingCount = 0;
       let failedCount = 0;
       let reversedCount = 0;
-
-      const byService = new Map<string, { serviceType: string; label: string; txCount: number; volumeKobo: number; profitKobo: number }>();
 
       for (const doc of txDocs) {
         const tx = doc.data();
         const type = String(tx.type || "OTHER").toUpperCase();
         const status = String(tx.status || "PENDING").toUpperCase();
         const totalKobo = Math.max(0, Math.round(Number(tx.totalAmountKobo || 0)));
+        const costKobo = Math.max(0, Math.round(Number(tx.providerCostKobo || 0)));
         const marginKobo = Math.round(Number(tx.grossMarginKobo || 0));
+        const feeKobo = Math.max(0, Math.round(Number(tx.feeKobo || 0)));
         const createdMs = toEpochMs(tx.createdAt);
 
         allTimeTxCount += 1;
@@ -706,33 +955,28 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
         else if (status === "REVERSED") reversedCount += 1;
         else failedCount += 1;
 
-        if (status === "SUCCESSFUL") {
-          allTimeVolumeKobo += totalKobo;
-          allTimeProfitKobo += marginKobo;
-          if (createdMs >= todayMs) {
-            todayVolumeKobo += totalKobo;
-            todayProfitKobo += marginKobo;
-            todayTxCount += 1;
-          }
-          if (createdMs >= last7dMs) {
-            last7dVolumeKobo += totalKobo;
-            last7dProfitKobo += marginKobo;
-            last7dTxCount += 1;
-          }
-
-          const bucket = byService.get(type) ?? {
-            serviceType: type,
-            label: SERVICE_LABELS[type] || type,
-            txCount: 0,
-            volumeKobo: 0,
-            profitKobo: 0,
-          };
-          bucket.txCount += 1;
-          bucket.volumeKobo += totalKobo;
-          bucket.profitKobo += marginKobo;
-          byService.set(type, bucket);
+        recordInPeriod(periods.allTime, type, status, totalKobo, costKobo, marginKobo, feeKobo);
+        if (createdMs >= last30dMs) {
+          recordInPeriod(periods.monthly, type, status, totalKobo, costKobo, marginKobo, feeKobo);
+        }
+        if (createdMs >= last7dMs) {
+          recordInPeriod(periods.weekly, type, status, totalKobo, costKobo, marginKobo, feeKobo);
+        }
+        if (createdMs >= todayMs) {
+          recordInPeriod(periods.daily, type, status, totalKobo, costKobo, marginKobo, feeKobo);
         }
       }
+
+      const serializePeriod = (acc: PeriodAcc) => ({
+        totalSalesKobo: acc.totalSalesKobo,
+        providerCostsKobo: acc.providerCostsKobo,
+        grossProfitKobo: acc.grossProfitKobo,
+        paymentFeesKobo: acc.paymentFeesKobo,
+        refundsKobo: acc.refundsKobo,
+        refundCount: acc.refundCount,
+        txCount: acc.txCount,
+        serviceBreakdown: Array.from(acc.byService.values()).sort((a, b) => b.volumeKobo - a.volumeKobo),
+      });
 
       let clubKonnectBalanceKobo = 0;
       let clubKonnectReachable = false;
@@ -745,6 +989,13 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
         }
       }
 
+      let alrahuzDataBalanceKobo = 0;
+      let alrahuzDataReachable = false;
+      if (alrBalRes.status === "fulfilled" && alrBalRes.value) {
+        alrahuzDataBalanceKobo = Math.round(alrBalRes.value.balanceNaira * 100);
+        alrahuzDataReachable = true;
+      }
+
       let flutterwaveAvailableKobo = 0;
       let flutterwaveLedgerKobo = 0;
       let flutterwaveReachable = false;
@@ -754,7 +1005,7 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
         flutterwaveReachable = true;
       }
 
-      const totalProviderFloatKobo = clubKonnectBalanceKobo + flutterwaveAvailableKobo;
+      const totalProviderFloatKobo = clubKonnectBalanceKobo + alrahuzDataBalanceKobo + flutterwaveAvailableKobo;
       const floatCoveragePercent =
         totalWalletLiabilitiesKobo > 0
           ? Number(((totalProviderFloatKobo / totalWalletLiabilitiesKobo) * 100).toFixed(1))
@@ -765,7 +1016,10 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
           ? Number(((successfulCount / completedTerminalCount) * 100).toFixed(1))
           : 100.0;
 
-      const serviceBreakdown = Array.from(byService.values()).sort((a, b) => b.volumeKobo - a.volumeKobo);
+      const serializedDaily = serializePeriod(periods.daily);
+      const serializedWeekly = serializePeriod(periods.weekly);
+      const serializedMonthly = serializePeriod(periods.monthly);
+      const serializedAllTime = serializePeriod(periods.allTime);
 
       res.json({
         status: "success",
@@ -779,6 +1033,10 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
         totalWalletLiabilitiesKobo,
         clubKonnectBalanceKobo,
         clubKonnectReachable,
+        clubKonnectEnabled: isProviderEnabled(controls, "CLUBKONNECT"),
+        alrahuzDataBalanceKobo,
+        alrahuzDataReachable,
+        alrahuzDataEnabled: isProviderEnabled(controls, "ALRAHUZDATA"),
         flutterwaveAvailableKobo,
         flutterwaveLedgerKobo,
         flutterwaveReachable,
@@ -786,25 +1044,32 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
         floatCoveragePercent,
         lowClubKonnectFloatWarning: clubKonnectReachable && clubKonnectBalanceKobo < 1_000_000,
         solvencyAlert:
-          (clubKonnectReachable || flutterwaveReachable) &&
+          (clubKonnectReachable || alrahuzDataReachable || flutterwaveReachable) &&
           totalWalletLiabilitiesKobo > 0 &&
           totalProviderFloatKobo < totalWalletLiabilitiesKobo,
-        allTimeVolumeKobo,
-        allTimeProfitKobo,
+        allTimeVolumeKobo: serializedAllTime.totalSalesKobo,
+        allTimeProfitKobo: serializedAllTime.grossProfitKobo,
         allTimeTxCount,
-        todayVolumeKobo,
-        todayProfitKobo,
-        todayTxCount,
-        last7dVolumeKobo,
-        last7dProfitKobo,
-        last7dTxCount,
+        todayVolumeKobo: serializedDaily.totalSalesKobo,
+        todayProfitKobo: serializedDaily.grossProfitKobo,
+        todayTxCount: serializedDaily.txCount,
+        last7dVolumeKobo: serializedWeekly.totalSalesKobo,
+        last7dProfitKobo: serializedWeekly.grossProfitKobo,
+        last7dTxCount: serializedWeekly.txCount,
+        last30dVolumeKobo: serializedMonthly.totalSalesKobo,
+        last30dProfitKobo: serializedMonthly.grossProfitKobo,
+        last30dTxCount: serializedMonthly.txCount,
         successfulCount,
         pendingCount,
         failedCount,
         reversedCount,
         successRatePercent,
         openTicketsCount,
-        serviceBreakdown,
+        serviceBreakdown: serializedAllTime.serviceBreakdown,
+        dailyMetrics: serializedDaily,
+        weeklyMetrics: serializedWeekly,
+        monthlyMetrics: serializedMonthly,
+        allTimeMetrics: serializedAllTime,
       });
     } catch (err) {
       res.status(400).json({ status: "error", message: (err as Error).message });

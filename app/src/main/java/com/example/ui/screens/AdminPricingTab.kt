@@ -18,16 +18,19 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -58,6 +61,8 @@ import com.example.data.model.PlatformConfig
 import com.example.data.model.ServiceType
 import com.example.data.remote.AdminPricingMatrixResponse
 import com.example.data.remote.LiveCatalogPlanDto
+import com.example.data.remote.ProviderComparisonRowDto
+import com.example.data.remote.ProviderControlsResponse
 import com.example.data.remote.SavePlanOverrideRequest
 import com.example.data.remote.ServicePricingRuleDto
 import com.example.ui.theme.JetBrainsMono
@@ -86,21 +91,29 @@ fun AdminPricingTab(
     pricingMatrix: AdminPricingMatrixResponse?,
     isLoadingPricing: Boolean,
     platformConfig: PlatformConfig,
+    providerControls: ProviderControlsResponse? = null,
     isBusy: Boolean,
     onLoadPricingMatrix: (refresh: Boolean) -> Unit,
     onSavePricingRules: (List<ServicePricingRuleDto>) -> Unit,
     onSavePlanOverride: (SavePlanOverrideRequest) -> Unit,
-    onToggleUtilityService: (keys: List<String>, enabled: Boolean, label: String) -> Unit
+    onToggleUtilityService: (keys: List<String>, enabled: Boolean, label: String) -> Unit,
+    onRefreshProviderControls: () -> Unit = {},
+    onToggleApiProvider: (providerId: String, enabled: Boolean) -> Unit = { _, _ -> },
+    onUpdateServiceRouting: (serviceType: String, routingMode: String) -> Unit = { _, _ -> }
 ) {
     LaunchedEffect(Unit) {
         if (pricingMatrix == null) {
             onLoadPricingMatrix(false)
         }
+        if (providerControls == null) {
+            onRefreshProviderControls()
+        }
     }
 
-    // 0 = Global Margin Rules, 1 = All Live Plans Matrix, 2 = Service ON/OFF Toggles
+    // 0 = Margin Rules, 1 = All Live Plans, 2 = Compare Providers, 3 = Providers ON/OFF, 4 = Services ON/OFF
     var subMode by remember { mutableIntStateOf(0) }
     var selectedServiceFilter by remember { mutableStateOf("ALL") }
+    var selectedProviderFilter by remember { mutableStateOf("ALL") }
     var searchQuery by remember { mutableStateOf("") }
 
     var editingRule by remember { mutableStateOf<ServicePricingRuleDto?>(null) }
@@ -122,19 +135,49 @@ fun AdminPricingTab(
         }
     }
 
-    val filteredPlans = remember(allLivePlans, selectedServiceFilter, searchQuery) {
+    val comparisonRows = remember(pricingMatrix) {
+        pricingMatrix?.providerComparison.orEmpty()
+    }
+
+    val filteredPlans = remember(allLivePlans, selectedServiceFilter, selectedProviderFilter, searchQuery) {
         allLivePlans.filter { plan ->
             val matchesService = when (selectedServiceFilter) {
                 "ALL" -> true
                 "BROADBAND" -> plan.serviceType == "SMILE" || plan.serviceType == "SPECTRANET"
                 else -> plan.serviceType.equals(selectedServiceFilter, ignoreCase = true)
             }
+            val matchesProvider = when (selectedProviderFilter) {
+                "ALL" -> true
+                else -> plan.apiProvider.equals(selectedProviderFilter, ignoreCase = true)
+            }
             val matchesQuery = searchQuery.isBlank() ||
                 plan.productName.contains(searchQuery, ignoreCase = true) ||
                 plan.providerName.contains(searchQuery, ignoreCase = true) ||
+                plan.apiProviderName.contains(searchQuery, ignoreCase = true) ||
                 plan.categoryGroup.contains(searchQuery, ignoreCase = true) ||
                 plan.productCode.contains(searchQuery, ignoreCase = true)
-            matchesService && matchesQuery
+            matchesService && matchesProvider && matchesQuery
+        }
+    }
+
+    val filteredComparisonRows = remember(comparisonRows, selectedServiceFilter, selectedProviderFilter, searchQuery) {
+        comparisonRows.filter { row ->
+            val matchesService = when (selectedServiceFilter) {
+                "ALL" -> true
+                "BROADBAND" -> row.serviceType == "SMILE" || row.serviceType == "SPECTRANET"
+                else -> row.serviceType.equals(selectedServiceFilter, ignoreCase = true)
+            }
+            val matchesProvider = when (selectedProviderFilter) {
+                "ALL" -> true
+                else -> row.apiProvider.equals(selectedProviderFilter, ignoreCase = true)
+            }
+            val matchesQuery = searchQuery.isBlank() ||
+                row.productName.contains(searchQuery, ignoreCase = true) ||
+                row.providerName.contains(searchQuery, ignoreCase = true) ||
+                row.apiProviderName.contains(searchQuery, ignoreCase = true) ||
+                row.categoryGroup.contains(searchQuery, ignoreCase = true) ||
+                row.productCode.contains(searchQuery, ignoreCase = true)
+            matchesService && matchesProvider && matchesQuery
         }
     }
 
@@ -173,27 +216,32 @@ fun AdminPricingTab(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "Live ClubKonnect Pricing & Profit Engine",
+                                "Pricing, Providers & Profit Engine",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
                                 text = pricingMatrix?.let {
-                                    "${it.totalPlans} live ClubKonnect plans loaded • Exact wholesale cost vs your profit"
-                                } ?: "Load live ClubKonnect wholesale API rates to configure markups, discounts & fees.",
+                                    val ckTag = if (it.clubKonnectConnected) "ClubKonnect Live" else "ClubKonnect Offline"
+                                    val alrTag = if (it.alrahuzDataConnected) "AlrahuzData Live" else "AlrahuzData Idle"
+                                    "${it.totalPlans} routed plans • $ckTag • $alrTag"
+                                } ?: "Compare Provider Cost vs Selling Price vs Profit across ClubKonnect & AlrahuzData.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         IconButton(
-                            onClick = { onLoadPricingMatrix(true) },
+                            onClick = {
+                                onLoadPricingMatrix(true)
+                                onRefreshProviderControls()
+                            },
                             enabled = !isLoadingPricing && !isBusy,
                             modifier = Modifier.testTag("admin_pricing_refresh_button")
                         ) {
                             if (isLoadingPricing) {
                                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             } else {
-                                Icon(Icons.Filled.Refresh, contentDescription = "Refresh live ClubKonnect prices")
+                                Icon(Icons.Filled.Refresh, contentDescription = "Refresh live provider prices")
                             }
                         }
                     }
@@ -213,13 +261,25 @@ fun AdminPricingTab(
                         FilterChip(
                             selected = subMode == 1,
                             onClick = { subMode = 1 },
-                            label = { Text("All Live Plans (${allLivePlans.size})") },
+                            label = { Text("All Plans (${allLivePlans.size})") },
                             modifier = Modifier.testTag("admin_pricing_mode_plans")
                         )
                         FilterChip(
                             selected = subMode == 2,
                             onClick = { subMode = 2 },
-                            label = { Text("Service ON/OFF") },
+                            label = { Text("Compare (${comparisonRows.size})") },
+                            modifier = Modifier.testTag("admin_pricing_mode_compare")
+                        )
+                        FilterChip(
+                            selected = subMode == 3,
+                            onClick = { subMode = 3 },
+                            label = { Text("Providers ON/OFF") },
+                            modifier = Modifier.testTag("admin_pricing_mode_providers")
+                        )
+                        FilterChip(
+                            selected = subMode == 4,
+                            onClick = { subMode = 4 },
+                            label = { Text("Services ON/OFF") },
                             modifier = Modifier.testTag("admin_pricing_mode_toggles")
                         )
                     }
@@ -304,7 +364,7 @@ fun AdminPricingTab(
                                     ) {
                                         if (isVariable) {
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Text("ClubKonnect Rate", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("Provider Cost", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                                 Text(
                                                     "${samplePlan.commissionPercent}% off face",
                                                     style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
@@ -312,7 +372,7 @@ fun AdminPricingTab(
                                                 )
                                             }
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Text("Customer Rate", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("My Selling Price", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                                 Text(
                                                     "${samplePlan.discountPercent}% off + ${CurrencyFormatter.formatKobo(samplePlan.feeKobo)}",
                                                     style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
@@ -320,7 +380,7 @@ fun AdminPricingTab(
                                                 )
                                             }
                                             Column(horizontalAlignment = Alignment.End) {
-                                                Text("Gain / ₦1k", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("My Profit / ₦1k", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                                 Text(
                                                     text = "${if (samplePlan.netProfitKobo >= 0) "+" else ""}${CurrencyFormatter.formatKobo(samplePlan.netProfitKobo)}",
                                                     style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
@@ -330,7 +390,7 @@ fun AdminPricingTab(
                                             }
                                         } else {
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Text("Sample CK Cost", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("Provider Cost", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                                 Text(
                                                     CurrencyFormatter.formatKobo(samplePlan.providerCostKobo),
                                                     style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
@@ -338,7 +398,7 @@ fun AdminPricingTab(
                                                 )
                                             }
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Text("Customer Pays", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("My Selling Price", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                                 Text(
                                                     CurrencyFormatter.formatKobo(samplePlan.sellingPriceKobo + samplePlan.feeKobo),
                                                     style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
@@ -346,7 +406,7 @@ fun AdminPricingTab(
                                                 )
                                             }
                                             Column(horizontalAlignment = Alignment.End) {
-                                                Text("Your Profit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("My Profit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                                 Text(
                                                     text = "${if (samplePlan.netProfitKobo >= 0) "+" else ""}${CurrencyFormatter.formatKobo(samplePlan.netProfitKobo)} (${samplePlan.profitMarginPercent}%)",
                                                     style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
@@ -364,7 +424,7 @@ fun AdminPricingTab(
             }
         }
 
-        // MODE 1: ALL LIVE CLUBKONNECT PLANS EXPLORER (COST VS SELL VS PROFIT)
+        // MODE 1: ALL LIVE PLANS EXPLORER (SIDE-BY-SIDE COST | SELLING PRICE | PROFIT)
         if (subMode == 1) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -379,6 +439,21 @@ fun AdminPricingTab(
                             .fillMaxWidth()
                             .testTag("admin_pricing_plan_search")
                     )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("ALL" to "All Providers", "CLUBKONNECT" to "ClubKonnect", "ALRAHUZDATA" to "AlrahuzData").forEach { (key, label) ->
+                            FilterChip(
+                                selected = selectedProviderFilter == key,
+                                onClick = { selectedProviderFilter = key },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
 
                     Row(
                         modifier = Modifier
@@ -409,14 +484,14 @@ fun AdminPricingTab(
                     }
 
                     Text(
-                        text = "Showing ${filteredPlans.size} live plan(s). Tap Edit on any plan to override its exact selling price or discount.",
+                        text = "Showing ${filteredPlans.size} live plan(s). Side-by-side Provider Cost, Selling Price & Profit — tap Edit to override.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            items(filteredPlans.take(150), key = { "${it.serviceType}_${it.providerCode}_${it.productCode}_${it.id}" }) { plan ->
+            items(filteredPlans.take(150), key = { "${it.apiProvider}_${it.serviceType}_${it.providerCode}_${it.productCode}_${it.id}" }) { plan ->
                 val isVariable = plan.serviceType in setOf("AIRTIME", "ELECTRICITY", "BETTING")
                 val profitColor = when {
                     plan.netProfitKobo > 0L -> StatusSuccess
@@ -443,6 +518,21 @@ fun AdminPricingTab(
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier.weight(1f, fill = false)
                                     )
+                                    Surface(
+                                        color = if (plan.apiProvider == "ALRAHUZDATA") {
+                                            MaterialTheme.colorScheme.tertiaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.secondaryContainer
+                                        },
+                                        shape = RoundedCornerShape(50)
+                                    ) {
+                                        Text(
+                                            text = plan.apiProviderName,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
                                     Surface(
                                         color = if (plan.hasCustomOverride) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                                         shape = RoundedCornerShape(50)
@@ -472,8 +562,8 @@ fun AdminPricingTab(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Column {
-                                Text("ClubKonnect Cost", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Provider Cost", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text(
                                     text = if (isVariable) {
                                         "${plan.commissionPercent}% API comm"
@@ -484,8 +574,8 @@ fun AdminPricingTab(
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
-                            Column {
-                                Text("Customer Pays", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("My Selling Price", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text(
                                     text = if (isVariable) {
                                         "${plan.discountPercent}% disc + ${CurrencyFormatter.formatKobo(plan.feeKobo)}"
@@ -497,7 +587,7 @@ fun AdminPricingTab(
                                 )
                             }
                             Column(horizontalAlignment = Alignment.End) {
-                                Text(if (isVariable) "Gain / ₦1k" else "Net Profit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(if (isVariable) "My Profit / ₦1k" else "My Profit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text(
                                     text = "${if (plan.netProfitKobo >= 0) "+" else ""}${CurrencyFormatter.formatKobo(plan.netProfitKobo)} (${plan.profitMarginPercent}%)",
                                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono),
@@ -511,8 +601,104 @@ fun AdminPricingTab(
             }
         }
 
-        // MODE 2: UTILITY SERVICE ON/OFF TOGGLES
+        // MODE 2: MULTI-PROVIDER COMPARISON (PROVIDER | PRODUCT | AVAILABILITY | COST | SELL | EXPECTED PROFIT)
         if (subMode == 2) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Filled.CompareArrows, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                            Text(
+                                text = "Compare live Provider Cost, Selling Price, Availability, and Expected Profit side by side across ClubKonnect & AlrahuzData.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        label = { Text("Compare products (e.g. MTN 1GB, Airtel 2GB, DStv)") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_compare_search")
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("ALL" to "All Services", "DATA" to "Data", "AIRTIME" to "Airtime", "CABLE_TV" to "Cable TV", "ELECTRICITY" to "Electricity", "RECHARGE_CARD" to "Recharge e-PIN", "WAEC_PIN" to "WAEC", "JAMB_PIN" to "JAMB").forEach { (key, label) ->
+                            FilterChip(
+                                selected = selectedServiceFilter == key,
+                                onClick = { selectedServiceFilter = key },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "Showing ${filteredComparisonRows.size} provider offering(s) sorted by product & lowest wholesale cost.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            if (filteredComparisonRows.isEmpty()) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "No comparison rows match your current filter. Tap Refresh above to fetch live plans from all configured API providers.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
+            } else {
+                items(filteredComparisonRows.take(150), key = { "${it.apiProvider}_${it.id}" }) { row ->
+                    ProviderComparisonCard(row = row)
+                }
+            }
+        }
+
+        // MODE 3: API PROVIDERS ON/OFF & ROUTING CONTROLS
+        if (subMode == 3) {
+            item {
+                AdminProvidersControlCard(
+                    controls = providerControls,
+                    isBusy = isBusy,
+                    onRefresh = {
+                        onRefreshProviderControls()
+                        onLoadPricingMatrix(true)
+                    },
+                    onToggleProvider = onToggleApiProvider,
+                    onUpdateServiceRouting = onUpdateServiceRouting
+                )
+            }
+        }
+
+        // MODE 4: UTILITY SERVICE ON/OFF TOGGLES
+        if (subMode == 4) {
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -668,6 +854,7 @@ fun AdminPricingTab(
         var feeNairaText by remember(plan.id) { mutableStateOf((plan.feeKobo / 100.0).toString()) }
         var discText by remember(plan.id) { mutableStateOf(plan.discountPercent.toString()) }
         var enabled by remember(plan.id) { mutableStateOf(plan.available) }
+        var allowBelowCost by remember(plan.id) { mutableStateOf(false) }
 
         val previewSell = CurrencyFormatter.nairaToKobo(sellNairaText) ?: plan.sellingPriceKobo
         val previewFee = CurrencyFormatter.nairaToKobo(feeNairaText) ?: plan.feeKobo
@@ -680,17 +867,18 @@ fun AdminPricingTab(
         } else {
             previewSell + previewFee - plan.providerCostKobo
         }
+        val isBelowCost = !isVariable && plan.providerCostKobo > 0L && (previewSell + previewFee) < plan.providerCostKobo
 
         AlertDialog(
             onDismissRequest = { editingPlan = null },
-            title = { Text("Override: ${plan.productName}") },
+            title = { Text("Override (${plan.apiProviderName}): ${plan.productName}") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = if (isVariable) {
-                            "ClubKonnect Live Commission: ${plan.commissionPercent}%"
+                            "${plan.apiProviderName} Live Commission: ${plan.commissionPercent}%"
                         } else {
-                            "ClubKonnect Live Wholesale Cost: ${CurrencyFormatter.formatKobo(plan.providerCostKobo)}"
+                            "${plan.apiProviderName} Wholesale Cost: ${CurrencyFormatter.formatKobo(plan.providerCostKobo)}"
                         },
                         style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
                         color = MaterialTheme.colorScheme.primary,
@@ -700,7 +888,7 @@ fun AdminPricingTab(
                         OutlinedTextField(
                             value = sellNairaText,
                             onValueChange = { sellNairaText = it },
-                            label = { Text("Custom Customer Selling Price (₦)") },
+                            label = { Text("My Custom Selling Price (₦)") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                             singleLine = true
                         )
@@ -734,12 +922,22 @@ fun AdminPricingTab(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "${if (isVariable) "Net Profit per ₦1,000" else "Net Profit per Order"}: ${if (liveProfitKobo >= 0L) "+" else ""}${CurrencyFormatter.formatKobo(liveProfitKobo)}",
+                            text = "${if (isVariable) "My Profit per ₦1,000" else "My Profit per Order"}: ${if (liveProfitKobo >= 0L) "+" else ""}${CurrencyFormatter.formatKobo(liveProfitKobo)}",
                             style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
                             color = if (liveProfitKobo >= 0L) StatusSuccess else StatusFailed,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(10.dp)
                         )
+                    }
+                    if (isBelowCost) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = allowBelowCost, onCheckedChange = { allowBelowCost = it })
+                            Text(
+                                text = "Confirm intentional below-cost promo price",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StatusFailed
+                            )
+                        }
                     }
                     if (plan.hasCustomOverride) {
                         OutlinedButton(
@@ -747,6 +945,7 @@ fun AdminPricingTab(
                                 onSavePlanOverride(
                                     SavePlanOverrideRequest(
                                         serviceType = plan.serviceType,
+                                        apiProvider = plan.apiProvider,
                                         providerCode = plan.providerCode,
                                         providerName = plan.providerName,
                                         productCode = plan.productCode,
@@ -777,6 +976,7 @@ fun AdminPricingTab(
                         onSavePlanOverride(
                             SavePlanOverrideRequest(
                                 serviceType = plan.serviceType,
+                                apiProvider = plan.apiProvider,
                                 providerCode = plan.providerCode,
                                 providerName = plan.providerName,
                                 productCode = plan.productCode,
@@ -789,11 +989,13 @@ fun AdminPricingTab(
                                 discountPercent = previewDisc,
                                 commissionPercent = plan.commissionPercent,
                                 enabled = enabled,
-                                clearOverride = false
+                                clearOverride = false,
+                                allowBelowCost = allowBelowCost
                             )
                         )
                         editingPlan = null
-                    }
+                    },
+                    enabled = !isBelowCost || allowBelowCost
                 ) {
                     Text("Save Override", fontWeight = FontWeight.Bold)
                 }
@@ -802,5 +1004,144 @@ fun AdminPricingTab(
                 TextButton(onClick = { editingPlan = null }) { Text("Cancel") }
             }
         )
+    }
+}
+
+@Composable
+private fun ProviderComparisonCard(row: ProviderComparisonRowDto) {
+    val isVariable = row.serviceType in setOf("AIRTIME", "ELECTRICITY", "BETTING")
+    val profitColor = when {
+        row.expectedProfitKobo > 0L -> StatusSuccess
+        row.expectedProfitKobo < 0L -> StatusFailed
+        else -> StatusPending
+    }
+    val availabilityColor = when {
+        !row.providerEnabled -> StatusFailed
+        row.available -> StatusSuccess
+        else -> StatusPending
+    }
+    val availabilityLabel = when {
+        !row.providerEnabled -> "PROVIDER OFF"
+        row.available -> "AVAILABLE"
+        else -> "UNAVAILABLE"
+    }
+
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(
+            width = if (row.isBestValue) 1.5.dp else 1.dp,
+            color = if (row.isBestValue) StatusSuccess else MaterialTheme.colorScheme.outlineVariant
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Surface(
+                        color = if (row.apiProvider == "ALRAHUZDATA") {
+                            MaterialTheme.colorScheme.tertiaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        },
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Text(
+                            text = row.apiProviderName,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                    if (row.isBestValue) {
+                        Surface(
+                            color = StatusSuccess.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(50)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(Icons.Filled.Star, contentDescription = null, tint = StatusSuccess, modifier = Modifier.size(12.dp))
+                                Text(
+                                    text = "Best Margin",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StatusSuccess,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+                Surface(color = availabilityColor.copy(alpha = 0.14f), shape = RoundedCornerShape(50)) {
+                    Text(
+                        text = availabilityLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = availabilityColor,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            Column {
+                Text(
+                    text = "${row.providerName} • ${row.productName}",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "${row.serviceType} • ${row.categoryGroup.ifBlank { row.productCode }}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            HorizontalDivider()
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Provider Cost", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        text = if (isVariable) "${row.commissionPercent}% comm" else CurrencyFormatter.formatKobo(row.providerCostKobo),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Selling Price", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        text = if (isVariable) {
+                            "${row.discountPercent}% disc + ${CurrencyFormatter.formatKobo(row.feeKobo)}"
+                        } else {
+                            CurrencyFormatter.formatKobo(row.sellingPriceKobo + row.feeKobo)
+                        },
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(if (isVariable) "Profit / ₦1k" else "Expected Profit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        text = "${if (row.expectedProfitKobo >= 0) "+" else ""}${CurrencyFormatter.formatKobo(row.expectedProfitKobo)} (${row.profitMarginPercent}%)",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono),
+                        color = profitColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
     }
 }

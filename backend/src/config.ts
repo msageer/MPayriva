@@ -72,6 +72,8 @@ export const CONFIG = {
   callbackBaseUrl: (process.env.BACKEND_CALLBACK_BASE_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/+$/, ""),
   clubKonnectUserId: process.env.CLUBKONNECT_USER_ID || "",
   clubKonnectApiKey: process.env.CLUBKONNECT_API_KEY || "",
+  alrahuzDataToken: process.env.ALRAHUZDATA_API_TOKEN || "",
+  alrahuzDataBaseUrl: (process.env.ALRAHUZDATA_BASE_URL || "https://alrahuzdata.com.ng/api").replace(/\/+$/, ""),
   flutterwaveSecretKey: process.env.FLUTTERWAVE_SECRET_KEY || "",
   flutterwaveWebhookHash: process.env.FLUTTERWAVE_WEBHOOK_HASH || "",
   flutterwaveRedirectUrl: process.env.FLUTTERWAVE_REDIRECT_URL || "",
@@ -93,7 +95,7 @@ export function timingSafeEqualStr(a: string, b: string): boolean {
 }
 
 export async function logProviderEvent(params: {
-  provider: "CLUBKONNECT" | "FLUTTERWAVE" | "SYSTEM";
+  provider: "CLUBKONNECT" | "ALRAHUZDATA" | "FLUTTERWAVE" | "SYSTEM";
   action: string;
   reference: string;
   statusCode: string;

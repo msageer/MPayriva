@@ -17,11 +17,13 @@ import com.example.data.remote.AdminPricingMatrixResponse
 import com.example.data.remote.ClubKonnectFundingAccountDto
 import com.example.data.remote.LiveFlutterwaveTransferRequest
 import com.example.data.remote.NigerianBankDto
+import com.example.data.remote.ProviderControlsResponse
 import com.example.data.remote.ProviderHealthResponse
 import com.example.data.remote.SavePlanOverrideRequest
 import com.example.data.remote.ServicePricingRuleDto
 import com.example.data.remote.TreasuryTransferDto
 import com.example.data.remote.TrustedBackendClient
+import com.example.data.remote.UpdateProviderControlsRequest
 import com.example.data.repository.FintechRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,6 +56,9 @@ class AdminViewModel(
 
     private val _pricingMatrix = MutableStateFlow<AdminPricingMatrixResponse?>(null)
     val pricingMatrix: StateFlow<AdminPricingMatrixResponse?> = _pricingMatrix.asStateFlow()
+
+    private val _providerControls = MutableStateFlow<ProviderControlsResponse?>(null)
+    val providerControls: StateFlow<ProviderControlsResponse?> = _providerControls.asStateFlow()
 
     private val _isLoadingPricing = MutableStateFlow(false)
     val isLoadingPricing: StateFlow<Boolean> = _isLoadingPricing.asStateFlow()
@@ -419,13 +424,76 @@ class AdminViewModel(
             _isLoadingPricing.value = false
             result.onSuccess { matrix ->
                 _pricingMatrix.value = matrix
+                if (matrix.providersSummary.isNotEmpty() || matrix.serviceRouting.isNotEmpty()) {
+                    _providerControls.value = ProviderControlsResponse(
+                        status = "success",
+                        providers = matrix.providersSummary,
+                        serviceRouting = matrix.serviceRouting
+                    )
+                }
                 if (!silent && refresh) {
-                    _statusBanner.value = ActionBanner("Fetched ${matrix.totalPlans} live ClubKonnect plans & wholesale rates.")
+                    _statusBanner.value = ActionBanner("Fetched ${matrix.totalPlans} live plans across active providers.")
                 }
             }.onFailure { err ->
                 if (!silent) {
-                    _statusBanner.value = ActionBanner(err.message ?: "Unable to fetch live ClubKonnect pricing matrix", isError = true)
+                    _statusBanner.value = ActionBanner(err.message ?: "Unable to fetch live pricing matrix", isError = true)
                 }
+            }
+        }
+    }
+
+    fun loadProviderControls(silent: Boolean = true) {
+        viewModelScope.launch {
+            if (!silent) _isBusy.value = true
+            val result = backendClient.adminGetProviderControls()
+            if (!silent) _isBusy.value = false
+            result.onSuccess { controls ->
+                _providerControls.value = controls
+            }.onFailure { err ->
+                if (!silent) {
+                    _statusBanner.value = ActionBanner(err.message ?: "Unable to load provider controls", isError = true)
+                }
+            }
+        }
+    }
+
+    fun toggleApiProvider(providerId: String, enabled: Boolean) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val req = when (providerId.uppercase()) {
+                "CLUBKONNECT" -> UpdateProviderControlsRequest(clubKonnectEnabled = enabled)
+                "ALRAHUZDATA" -> UpdateProviderControlsRequest(alrahuzDataEnabled = enabled)
+                else -> UpdateProviderControlsRequest()
+            }
+            val result = backendClient.adminUpdateProviderControls(req)
+            _isBusy.value = false
+            result.onSuccess { updated ->
+                _providerControls.value = updated
+                _statusBanner.value = ActionBanner(
+                    updated.message ?: "$providerId ${if (enabled) "enabled" else "disabled"} live."
+                )
+                loadPricingMatrix(refresh = true, silent = true)
+                loadOverviewMetrics(silent = true)
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Failed to update provider toggle", isError = true)
+            }
+        }
+    }
+
+    fun updateServiceRouting(serviceType: String, routingMode: String) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val req = UpdateProviderControlsRequest(
+                serviceRouting = mapOf(serviceType.uppercase() to routingMode.uppercase())
+            )
+            val result = backendClient.adminUpdateProviderControls(req)
+            _isBusy.value = false
+            result.onSuccess { updated ->
+                _providerControls.value = updated
+                _statusBanner.value = ActionBanner("Updated $serviceType routing to $routingMode.")
+                loadPricingMatrix(refresh = true, silent = true)
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Failed to update service routing", isError = true)
             }
         }
     }

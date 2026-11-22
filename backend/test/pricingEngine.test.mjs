@@ -331,6 +331,153 @@ test("Super Admin directApiWholesale charges exact upstream API cost with zero f
   assert.equal(epin.grossMarginKobo, 0);
 });
 
+test("AlrahuzData status classifier protects against 5xx timeouts and parses success/decline cleanly", async () => {
+  const { classifyAlrahuzStatus } = await import("../src/pricingEngine.ts");
+
+  const ok = classifyAlrahuzStatus({ Status: "successful", id: 8821, token: "4411-2233-5566-7788" });
+  assert.equal(ok.resolution, "SUCCESSFUL");
+  assert.equal(ok.orderId, "8821");
+  assert.equal(ok.tokenOrPin, "4411-2233-5566-7788");
+
+  const timeout502 = classifyAlrahuzStatus({ __httpStatus: 502, error: "Bad Gateway" });
+  assert.equal(timeout502.resolution, "PENDING");
+
+  const declined400 = classifyAlrahuzStatus({ __httpStatus: 400, error: "Insufficient balance" });
+  assert.equal(declined400.resolution, "FAILED");
+
+  const requeryUnknown = classifyAlrahuzStatus({ __httpStatus: 404, detail: "Not found" }, false, true);
+  assert.equal(requeryUnknown.resolution, "PENDING");
+});
+
+test("Backend pricing override validator blocks negative, NaN, and accidental below-cost selling prices", async () => {
+  const { validateAdminPricingOverride } = await import("../src/pricingEngine.ts");
+
+  const valid = validateAdminPricingOverride({
+    serviceType: "DATA",
+    providerCostKobo: 25000,
+    sellingPriceKobo: 28000,
+    feeKobo: 0,
+    discountPercent: 0,
+    commissionPercent: 0,
+  });
+  assert.equal(valid.sellingPriceKobo, 28000);
+
+  assert.throws(
+    () =>
+      validateAdminPricingOverride({
+        serviceType: "DATA",
+        providerCostKobo: 25000,
+        sellingPriceKobo: 20000, // Below provider cost -> must reject!
+        feeKobo: 0,
+        discountPercent: 0,
+        commissionPercent: 0,
+      }),
+    /below provider cost/i
+  );
+
+  assert.throws(
+    () =>
+      validateAdminPricingOverride({
+        serviceType: "DATA",
+        providerCostKobo: 25000,
+        sellingPriceKobo: -500,
+        feeKobo: 0,
+        discountPercent: 0,
+        commissionPercent: 0,
+      }),
+    /non-negative/i
+  );
+});
+
+test("AlrahuzData dynamic catalog parser extracts Data, Cable, Airtime, and Exam PINs without hardcoding", async () => {
+  const { parseAlrahuzUserCatalog } = await import("../src/alrahuzCatalogParser.ts");
+  const samplePayload = {
+    user: { wallet_balance: "14500.50" },
+    Dataplans: {
+      MTN_PLAN: {
+        ALL: [
+          {
+            dataplan_id: 215,
+            plan_network: "MTN",
+            plan_type: "SME",
+            plan: "1.0GB",
+            plan_amount: "255",
+            month_validate: "30 days",
+          },
+        ],
+      },
+    },
+    Cableplan: {
+      DSTVPLAN: [{ cableplan_id: 19, cable: "DSTV", package: "DStv Compact", plan_amount: "15700" }],
+    },
+    topup_percentage: {
+      MTN: { VTU: 97 },
+      AIRTEL: { VTU: 97.5 },
+    },
+    Exam: {
+      WAEC: { amount: 3450 },
+    },
+  };
+
+  const parsed = parseAlrahuzUserCatalog(samplePayload);
+  assert.equal(parsed.walletBalanceNaira, 14500.5);
+  assert.equal(parsed.data.length, 1);
+  assert.equal(parsed.data[0].apiProvider, "ALRAHUZDATA");
+  assert.equal(parsed.data[0].providerCode, "01");
+  assert.equal(parsed.data[0].providerCostKobo, 25500);
+  assert.equal(parsed.data[0].categoryGroup, "SME");
+  assert.equal(parsed.cableTv.length, 1);
+  assert.equal(parsed.cableTv[0].providerCode, "dstv");
+  assert.equal(parsed.airtime.length, 2);
+  assert.equal(parsed.airtime[0].commissionPercent, 3);
+  assert.equal(parsed.waec.length, 1);
+  assert.equal(parsed.waec[0].providerCostKobo, 345000);
+});
+
+test("Disabled API providers are strictly excluded from routing and transaction execution", async () => {
+  const { sanitizeProviderControls, selectActiveProviderForService } = await import("../src/providerRouting.ts");
+
+  const controls = sanitizeProviderControls({
+    providers: {
+      CLUBKONNECT: { enabled: false },
+      ALRAHUZDATA: { enabled: true },
+    },
+    serviceRouting: {
+      DATA: "CLUBKONNECT",
+    },
+  });
+
+  // Even when routing asks for CLUBKONNECT, disabled provider must fail over to enabled ALRAHUZDATA
+  const routed = selectActiveProviderForService({
+    controls,
+    serviceType: "DATA",
+    configuredProviders: ["CLUBKONNECT", "ALRAHUZDATA"],
+  });
+  assert.equal(routed, "ALRAHUZDATA");
+
+  // Explicitly requesting a disabled provider returns null (hard block)
+  const blocked = selectActiveProviderForService({
+    controls,
+    serviceType: "DATA",
+    configuredProviders: ["CLUBKONNECT", "ALRAHUZDATA"],
+    requestedProvider: "CLUBKONNECT",
+  });
+  assert.equal(blocked, null);
+
+  // AUTO_CHEAPEST picks cheapest enabled provider
+  const bothOn = sanitizeProviderControls({
+    providers: { CLUBKONNECT: { enabled: true }, ALRAHUZDATA: { enabled: true } },
+    serviceRouting: { DATA: "AUTO_CHEAPEST" },
+  });
+  const cheapest = selectActiveProviderForService({
+    controls: bothOn,
+    serviceType: "DATA",
+    configuredProviders: ["CLUBKONNECT", "ALRAHUZDATA"],
+    costByProviderKobo: { CLUBKONNECT: 26500, ALRAHUZDATA: 24800 },
+  });
+  assert.equal(cheapest, "ALRAHUZDATA");
+});
+
 
 
 

@@ -492,3 +492,243 @@ export function classifyClubKonnectStatus(
     vouchers: [],
   };
 }
+
+/**
+ * Classifies AlrahuzData (MSORG Django REST) transaction responses into strict
+ * financial state machine outcomes. Ambiguous/timeout/5xx states ALWAYS stay PENDING.
+ */
+export function classifyAlrahuzStatus(
+  providerRes: Record<string, unknown>,
+  isDataCard = false,
+  isRequery = false
+): {
+  resolution: ProviderResolution;
+  reason: string;
+  tokenOrPin: string | null;
+  serialNumber: string | null;
+  orderId: string | null;
+  vouchers: EpinVoucher[];
+} {
+  const httpStatus = Number(providerRes.__httpStatus ?? 200);
+  const rawStatus = String(providerRes.Status || providerRes.status || "").trim();
+  const upperStatus = rawStatus.toUpperCase();
+  const apiMsg = String(
+    providerRes.api_response ||
+      providerRes.message ||
+      providerRes.error ||
+      providerRes.detail ||
+      ""
+  ).trim();
+  const reason = [rawStatus, apiMsg].filter(Boolean).join(" — ") || "AlrahuzData response";
+  const orderId =
+    providerRes.id !== undefined && providerRes.id !== null
+      ? String(providerRes.id).trim()
+      : providerRes.ident
+        ? String(providerRes.ident).trim()
+        : null;
+
+  // Extract printable recharge / exam PIN vouchers if returned
+  const vouchers: EpinVoucher[] = [];
+  const rawPins = providerRes.data_pin || providerRes.pins || providerRes.cards;
+  if (Array.isArray(rawPins)) {
+    for (const item of rawPins) {
+      if (typeof item === "string" && item.trim()) {
+        vouchers.push({
+          pin: item.trim(),
+          serialNumber: "",
+          batchNo: orderId || "",
+          network: String(providerRes.network_name || providerRes.plan_network || "NETWORK"),
+          denomination: String(providerRes.amount || ""),
+          loadCode: resolveRechargeLoadCode(String(providerRes.network_name || ""), isDataCard),
+          transactionDate: new Date().toISOString(),
+        });
+      } else if (item && typeof item === "object") {
+        const obj = item as Record<string, unknown>;
+        const pin = String(obj.pin || obj.PIN || obj.fields?.toString() || "").trim();
+        if (pin) {
+          vouchers.push({
+            pin,
+            serialNumber: String(obj.serial || obj.serial_number || obj.sno || "").trim(),
+            batchNo: String(obj.batch || orderId || "").trim(),
+            network: String(obj.network || providerRes.network_name || "NETWORK"),
+            denomination: String(obj.amount || providerRes.amount || ""),
+            loadCode: String(obj.load_code || resolveRechargeLoadCode(String(obj.network || ""), isDataCard)),
+            transactionDate: String(obj.create_date || new Date().toISOString()),
+          });
+        }
+      }
+    }
+  }
+
+  const rawToken =
+    providerRes.token ||
+    providerRes.Token ||
+    providerRes.pin ||
+    providerRes.pins_str ||
+    null;
+  const tokenOrPin =
+    vouchers.length > 0
+      ? vouchers.length === 1
+        ? vouchers[0].pin
+        : vouchers.map((v, idx) => `#${idx + 1}: ${v.pin}`).join("\n")
+      : rawToken && typeof rawToken === "string"
+        ? rawToken.trim()
+        : null;
+  const serialNumber = vouchers[0]?.serialNumber || (providerRes.serial ? String(providerRes.serial).trim() : null);
+
+  if (
+    upperStatus === "SUCCESSFUL" ||
+    upperStatus === "SUCCESS" ||
+    upperStatus === "DELIVERED" ||
+    vouchers.length > 0
+  ) {
+    return {
+      resolution: "SUCCESSFUL",
+      reason: apiMsg || "SUCCESSFUL",
+      tokenOrPin,
+      serialNumber,
+      orderId,
+      vouchers,
+    };
+  }
+
+  if (
+    upperStatus === "PROCESSING" ||
+    upperStatus === "PENDING" ||
+    upperStatus === "QUEUED" ||
+    httpStatus >= 500
+  ) {
+    return {
+      resolution: "PENDING",
+      reason: reason || "Processing at provider",
+      tokenOrPin,
+      serialNumber,
+      orderId,
+      vouchers: [],
+    };
+  }
+
+  if (isRequery) {
+    if (upperStatus === "FAILED" || upperStatus === "FAIL" || upperStatus === "CANCELLED" || upperStatus === "REFUNDED") {
+      return {
+        resolution: "FAILED",
+        reason: reason || "Provider confirmed failed",
+        tokenOrPin: null,
+        serialNumber: null,
+        orderId,
+        vouchers: [],
+      };
+    }
+    return {
+      resolution: "PENDING",
+      reason: reason || "Awaiting provider confirmation",
+      tokenOrPin,
+      serialNumber,
+      orderId,
+      vouchers: [],
+    };
+  }
+
+  if (
+    upperStatus === "FAILED" ||
+    upperStatus === "FAIL" ||
+    upperStatus === "ERROR" ||
+    upperStatus === "CANCELLED" ||
+    (httpStatus >= 400 && httpStatus < 500)
+  ) {
+    return {
+      resolution: "FAILED",
+      reason: reason || "Order declined by provider",
+      tokenOrPin: null,
+      serialNumber: null,
+      orderId,
+      vouchers: [],
+    };
+  }
+
+  return {
+    resolution: "PENDING",
+    reason: reason || "Awaiting provider confirmation",
+    tokenOrPin,
+    serialNumber,
+    orderId,
+    vouchers: [],
+  };
+}
+
+/**
+ * Strict server-side pricing override protection guard.
+ * Prevents corrupt, negative, NaN, or accidental below-cost pricing overrides.
+ */
+export function validateAdminPricingOverride(input: {
+  serviceType: string;
+  providerCostKobo: number;
+  sellingPriceKobo: number;
+  feeKobo: number;
+  discountPercent: number;
+  commissionPercent: number;
+  allowBelowCost?: boolean;
+}): {
+  providerCostKobo: number;
+  sellingPriceKobo: number;
+  feeKobo: number;
+  discountPercent: number;
+  commissionPercent: number;
+} {
+  const svc = String(input.serviceType || "").toUpperCase().trim();
+  const isVariable = svc === "AIRTIME" || svc === "ELECTRICITY" || svc === "BETTING";
+
+  const costKobo = Math.round(Number(input.providerCostKobo));
+  const sellKobo = Math.round(Number(input.sellingPriceKobo));
+  const feeKobo = Math.round(Number(input.feeKobo));
+  const discountPercent = Number(input.discountPercent);
+  const commissionPercent = Number(input.commissionPercent);
+
+  if (
+    !Number.isFinite(costKobo) ||
+    !Number.isFinite(sellKobo) ||
+    !Number.isFinite(feeKobo) ||
+    !Number.isFinite(discountPercent) ||
+    !Number.isFinite(commissionPercent)
+  ) {
+    throw new Error("Invalid numeric pricing values supplied.");
+  }
+
+  if (costKobo < 0 || sellKobo < 0 || feeKobo < 0 || feeKobo > 500000) {
+    throw new Error("Prices and fees must be non-negative and within safe bounds (max fee ₦5,000).");
+  }
+
+  if (discountPercent < 0 || discountPercent > 25) {
+    throw new Error("Customer discount must be between 0% and 25%.");
+  }
+
+  if (commissionPercent < 0 || commissionPercent > 50) {
+    throw new Error("Provider commission must be between 0% and 50%.");
+  }
+
+  if (!isVariable) {
+    if (sellKobo < 100) {
+      throw new Error("Fixed-price plans must have a selling price of at least ₦1.00.");
+    }
+    if (costKobo > 0 && sellKobo + feeKobo < costKobo && !input.allowBelowCost) {
+      throw new Error(
+        `Protected against loss-making price: selling price + fee (₦${((sellKobo + feeKobo) / 100).toFixed(2)}) is below provider cost (₦${(costKobo / 100).toFixed(2)}).`
+      );
+    }
+    if (costKobo > 0 && sellKobo > costKobo * 5) {
+      throw new Error("Selling price exceeds 5x provider cost safety ceiling. Please verify your entry.");
+    }
+  } else if (svc === "AIRTIME" && discountPercent > commissionPercent + 2 && !input.allowBelowCost) {
+    throw new Error(
+      `Protected against excessive airtime loss: customer discount (${discountPercent}%) exceeds provider commission (${commissionPercent}%) by more than 2%.`
+    );
+  }
+
+  return {
+    providerCostKobo: costKobo,
+    sellingPriceKobo: sellKobo,
+    feeKobo,
+    discountPercent: Number(discountPercent.toFixed(2)),
+    commissionPercent: Number(commissionPercent.toFixed(2)),
+  };
+}
