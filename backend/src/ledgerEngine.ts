@@ -228,15 +228,114 @@ export async function atomicReserveAndCreatePurchase(params: {
 }
 
 /**
+ * Super Admin Direct API Execution (msagirgroup@gmail.com only).
+ * Records an audited transaction funded directly from the live upstream API float
+ * (wholesale cost, ₦0 fee, ₦0 margin) without debiting or modifying customer wallet liabilities.
+ */
+export async function atomicCreateDirectApiPurchase(params: {
+  userId: string;
+  idempotencyKey: string;
+  reference: string;
+  serviceType: string;
+  providerCode: string;
+  productCode: string;
+  productName: string;
+  recipient: string;
+  providerCostKobo: number;
+}) {
+  const wholesaleCostKobo = Math.max(0, Math.round(params.providerCostKobo));
+  if (wholesaleCostKobo <= 0) throw new Error("Invalid wholesale API purchase amount.");
+
+  const lockRef = db.collection("idempotencyLocks").doc(params.idempotencyKey);
+  const userRef = db.collection("users").doc(params.userId);
+  const txRef = db.collection("transactions").doc(params.reference);
+
+  return db.runTransaction(async (tx) => {
+    const lockSnap = await tx.get(lockRef);
+    if (lockSnap.exists) {
+      throw new Error("Duplicate transaction prevented: this request has already been submitted.");
+    }
+
+    const userSnap = await tx.get(userRef);
+    if (!userSnap.exists) throw new Error("Account not found.");
+    const userData = userSnap.data()!;
+    if (userData.accountStatus !== "ACTIVE") {
+      throw new Error(`Account is currently ${userData.accountStatus}. Contact support.`);
+    }
+
+    const currentWalletKobo = Number(userData.walletBalanceKobo ?? 0);
+
+    tx.set(lockRef, {
+      userId: params.userId,
+      reference: params.reference,
+      type: params.serviceType,
+      fundingSource: "DIRECT_PROVIDER_API",
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    tx.set(txRef, {
+      userId: params.userId,
+      reference: params.reference,
+      idempotencyKey: params.idempotencyKey,
+      type: params.serviceType,
+      status: "PROCESSING",
+      provider: "CLUBKONNECT",
+      providerCode: params.providerCode,
+      recipient: params.recipient,
+      productName: params.productName,
+      productCode: params.productCode,
+      fundingSource: "DIRECT_PROVIDER_API",
+      directApiWholesale: true,
+      providerCostKobo: wholesaleCostKobo,
+      sellingPriceKobo: wholesaleCostKobo,
+      feeKobo: 0,
+      grossMarginKobo: 0,
+      totalAmountKobo: wholesaleCostKobo,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    tx.set(db.collection("ledgerEntries").doc(), {
+      userId: params.userId,
+      transactionId: params.reference,
+      reference: params.reference,
+      entryType: "DEBIT",
+      accountCode: "CLUBKONNECT_DIRECT_API",
+      amountKobo: wholesaleCostKobo,
+      balanceBeforeKobo: currentWalletKobo,
+      balanceAfterKobo: currentWalletKobo,
+      narration: `[Direct API Wholesale] ${params.productName} for ${params.recipient}`,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    return { wholesaleCostKobo };
+  });
+}
+
+/**
  * Safe Reversal: Only call when ClubKonnect explicitly confirms failure/cancellation.
+ * For DIRECT_PROVIDER_API transactions (Super Admin direct API float), marks FAILED
+ * WITHOUT crediting customer walletBalanceKobo (no customer wallet debit ever occurred).
  */
 export async function atomicReverseConfirmedFailure(reference: string, reason: string) {
   const txRef = db.collection("transactions").doc(reference);
-  const reversed = await db.runTransaction(async (tx) => {
+  const outcome = await db.runTransaction(async (tx) => {
     const txSnap = await tx.get(txRef);
     if (!txSnap.exists) return null;
     const data = txSnap.data()!;
-    if (data.status === "REVERSED" || data.status === "SUCCESSFUL") return null;
+    if (data.status === "REVERSED" || data.status === "SUCCESSFUL" || data.status === "FAILED") return null;
+
+    const isDirectApi =
+      data.fundingSource === "DIRECT_PROVIDER_API" || data.directApiWholesale === true;
+
+    if (isDirectApi) {
+      tx.update(txRef, {
+        status: "FAILED",
+        failureReason: reason,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { userId: String(data.userId), refundKobo: 0, isDirectApi: true };
+    }
 
     const userRef = db.collection("users").doc(data.userId);
     const userSnap = await tx.get(userRef);
@@ -270,16 +369,26 @@ export async function atomicReverseConfirmedFailure(reference: string, reason: s
       createdAt: FieldValue.serverTimestamp(),
     });
 
-    return { userId: String(data.userId), refundKobo };
+    return { userId: String(data.userId), refundKobo, isDirectApi: false };
   });
 
-  if (reversed) {
-    await notifyCustomer({
-      userId: reversed.userId,
-      title: "Transaction Reversed & Refunded",
-      body: `₦${(reversed.refundKobo / 100).toFixed(2)} has been refunded to your wallet (Ref: ${reference}).`,
-      type: "REFUND",
-      reference,
-    });
+  if (outcome) {
+    if (outcome.isDirectApi) {
+      await notifyCustomer({
+        userId: outcome.userId,
+        title: "Direct API Order Declined",
+        body: `Your direct API order (${reference}) was declined by the provider (${reason}). No app wallet balance was debited.`,
+        type: "PURCHASE_FAILED",
+        reference,
+      });
+    } else {
+      await notifyCustomer({
+        userId: outcome.userId,
+        title: "Transaction Reversed & Refunded",
+        body: `₦${(outcome.refundKobo / 100).toFixed(2)} has been refunded to your wallet (Ref: ${reference}).`,
+        type: "REFUND",
+        reference,
+      });
+    }
   }
 }

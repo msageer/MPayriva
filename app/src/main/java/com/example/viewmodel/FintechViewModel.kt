@@ -450,7 +450,8 @@ class FintechViewModel(
             }
 
             val profile = (userProfileState.value as? UiState.Success)?.data
-            if (!serviceType.equals("AIRTIME", ignoreCase = true) && profile != null && profile.walletBalanceKobo < amountKobo) {
+            val isDirectApiSuperAdmin = (liveCatalogState.value as? UiState.Success)?.data?.directApiMode == true
+            if (!isDirectApiSuperAdmin && !serviceType.equals("AIRTIME", ignoreCase = true) && profile != null && profile.walletBalanceKobo < amountKobo) {
                 _isSubmitting.value = false
                 val err = IllegalStateException("Insufficient wallet balance. Please fund your wallet first.")
                 _actionBanner.value = ActionBanner(err.message!!, isError = true)
@@ -474,6 +475,9 @@ class FintechViewModel(
             _isSubmitting.value = false
             responseResult.onSuccess { resp ->
                 _actionBanner.value = ActionBanner(resp.message)
+                if (isDirectApiSuperAdmin) {
+                    refreshLiveCatalog(force = true)
+                }
                 val voucherRecords = resp.vouchers.orEmpty().map { v ->
                     EpinVoucherRecord(
                         pin = v.pin,

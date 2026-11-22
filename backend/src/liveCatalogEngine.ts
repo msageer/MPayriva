@@ -42,6 +42,8 @@ export interface LiveStorefrontCatalogResponse {
   status: string;
   fetchedAt: string;
   clubKonnectConnected: boolean;
+  directApiMode?: boolean;
+  directApiBalanceNaira?: string | null;
   totalPlans: number;
   airtime: LiveCatalogPlan[];
   data: LiveCatalogPlan[];
@@ -998,6 +1000,48 @@ export async function getLiveStorefrontCatalog(
 
   cachedCatalog = { expiresAt: now + CACHE_TTL_MS, data: response };
   return response;
+}
+
+/**
+ * Pure projection for Super Admin Direct API Mode (msagirgroup@gmail.com only).
+ * Never mutates the shared retail cache; maps every plan to exact wholesale API cost,
+ * ₦0 service fee, and full upstream commission discount.
+ */
+export function projectCatalogForSuperAdminDirectApi(
+  catalog: LiveStorefrontCatalogResponse,
+  directApiBalanceNaira: string | null
+): LiveStorefrontCatalogResponse {
+  const toWholesale = (plan: LiveCatalogPlan): LiveCatalogPlan => ({
+    ...plan,
+    sellingPriceKobo: plan.providerCostKobo > 0 ? plan.providerCostKobo : plan.sellingPriceKobo,
+    feeKobo: 0,
+    discountPercent: plan.commissionPercent,
+    netProfitKobo: 0,
+    profitMarginPercent: 0,
+    hasCustomOverride: false,
+  });
+
+  return {
+    ...catalog,
+    directApiMode: true,
+    directApiBalanceNaira,
+    airtime: catalog.airtime.map(toWholesale),
+    data: catalog.data.map(toWholesale),
+    electricity: catalog.electricity.map(toWholesale),
+    cableTv: catalog.cableTv.map(toWholesale),
+    waec: catalog.waec.map(toWholesale),
+    jamb: catalog.jamb.map(toWholesale),
+    rechargeCards: {
+      ...catalog.rechargeCards,
+      items: catalog.rechargeCards.items.map(toWholesale),
+    },
+    dataCards: {
+      ...catalog.dataCards,
+      items: catalog.dataCards.items.map(toWholesale),
+    },
+    broadband: catalog.broadband.map(toWholesale),
+    betting: catalog.betting.map(toWholesale),
+  };
 }
 
 export async function findAuthorizedLiveProduct(

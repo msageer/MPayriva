@@ -4,9 +4,19 @@ import { FieldValue } from "firebase-admin/firestore";
 import { authAdmin, CONFIG, db, hashPin, logProviderEvent, notifyCustomer, timingSafeEqualStr } from "./config";
 import { ClubKonnectClient } from "./clubKonnectClient";
 import { FlutterwaveClient } from "./flutterwaveClient";
-import { atomicCreditWallet, atomicReserveAndCreatePurchase, atomicReverseConfirmedFailure } from "./ledgerEngine";
+import {
+  atomicCreateDirectApiPurchase,
+  atomicCreditWallet,
+  atomicReserveAndCreatePurchase,
+  atomicReverseConfirmedFailure,
+} from "./ledgerEngine";
 import { classifyClubKonnectStatus, computeAuthorizedPurchasePricing } from "./pricingEngine";
-import { findAuthorizedLiveProduct, getLiveStorefrontCatalog, invalidateLiveCatalogCache } from "./liveCatalogEngine";
+import {
+  findAuthorizedLiveProduct,
+  getLiveStorefrontCatalog,
+  invalidateLiveCatalogCache,
+  projectCatalogForSuperAdminDirectApi,
+} from "./liveCatalogEngine";
 import { registerAdminTreasuryAndPricingRoutes } from "./adminRoutes";
 
 const app = express();
@@ -30,6 +40,7 @@ interface AuthenticatedRequest extends Request {
   email?: string;
   emailVerified?: boolean;
   isAdmin?: boolean;
+  isSuperAdmin?: boolean;
 }
 
 async function resolveAdminStatus(uid: string, email?: string, emailVerified?: boolean): Promise<boolean> {
@@ -51,7 +62,10 @@ async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextF
     req.uid = decoded.uid;
     req.email = decoded.email;
     req.emailVerified = decoded.email_verified;
-    req.isAdmin = await resolveAdminStatus(decoded.uid, decoded.email, decoded.email_verified);
+    req.isSuperAdmin =
+      decoded.email?.toLowerCase() === CONFIG.bootstrappedAdminEmail &&
+      decoded.email_verified === true;
+    req.isAdmin = req.isSuperAdmin || (await resolveAdminStatus(decoded.uid, decoded.email, decoded.email_verified));
     next();
   } catch {
     res.status(401).json({ status: "error", message: "Invalid or expired session token" });
@@ -148,12 +162,16 @@ async function reconcileTransactionWithClubKonnect(reference: string) {
   }
 
   if (classified.resolution === "FAILED") {
+    const isDirectApi =
+      txData.fundingSource === "DIRECT_PROVIDER_API" || txData.directApiWholesale === true;
     await atomicReverseConfirmedFailure(reference, `Requery confirmed failure: ${classified.reason}`);
     return {
       notFound: false as const,
-      status: "REVERSED",
+      status: isDirectApi ? "FAILED" : "REVERSED",
       tokenOrPin: null,
-      message: `Order cancelled and refunded: ${classified.reason}`,
+      message: isDirectApi
+        ? `Direct API order declined by provider (no app wallet debited): ${classified.reason}`
+        : `Order cancelled and refunded: ${classified.reason}`,
     };
   }
 
@@ -188,6 +206,26 @@ app.get("/api/v1/catalog/live", requireAuth, async (req: AuthenticatedRequest, r
   try {
     const forceRefresh = req.query.refresh === "true" || req.query.refresh === "1";
     const liveCatalog = await getLiveStorefrontCatalog(clubKonnect, forceRefresh);
+
+    // Super Admin (msagirgroup@gmail.com) receives exact direct wholesale API rates & live API balance
+    if (req.isSuperAdmin === true) {
+      let liveApiBalanceNaira: string | null = null;
+      if (clubKonnect.isConfigured) {
+        try {
+          const balRes = await clubKonnect.getWalletBalance();
+          const rawBal = String(balRes.balance ?? balRes.Balance ?? balRes.walletbalance ?? "").replace(/[^0-9.]/g, "");
+          const parsedBal = Number(rawBal);
+          if (rawBal && Number.isFinite(parsedBal)) {
+            liveApiBalanceNaira = parsedBal.toFixed(2);
+          }
+        } catch {
+          liveApiBalanceNaira = null;
+        }
+      }
+      res.json(projectCatalogForSuperAdminDirectApi(liveCatalog, liveApiBalanceNaira));
+      return;
+    }
+
     res.json(liveCatalog);
   } catch (err) {
     res.status(400).json({ status: "error", message: (err as Error).message });
@@ -528,15 +566,18 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
       return false;
     });
 
-    // Enforce Admin Utility Service Toggles from /platformConfig/branding
-    const brandingSnap = await db.collection("platformConfig").doc("branding").get();
-    const enabledServices = (brandingSnap.data()?.enabledServices || {}) as Record<string, unknown>;
-    if (enabledServices[normalizedService] === false) {
-      res.status(403).json({
-        status: "FAILED",
-        message: "This service is currently paused by the administrator. Please try again later.",
-      });
-      return;
+    // Enforce Admin Utility Service Toggles for regular customers (Super Admin bypasses for direct API access)
+    const isDirectApiSuperAdmin = req.isSuperAdmin === true;
+    if (!isDirectApiSuperAdmin) {
+      const brandingSnap = await db.collection("platformConfig").doc("branding").get();
+      const enabledServices = (brandingSnap.data()?.enabledServices || {}) as Record<string, unknown>;
+      if (enabledServices[normalizedService] === false) {
+        res.status(403).json({
+          status: "FAILED",
+          message: "This service is currently paused by the administrator. Please try again later.",
+        });
+        return;
+      }
     }
 
     // Check live catalog & stock availability
@@ -553,7 +594,13 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
       });
       return;
     }
-    if (!matchedCatalog && liveLookup.pricingDoc) {
+
+    // Super Admin uses direct upstream API catalog costs (bypassing retail overrides); customers use retail catalog
+    if (isDirectApiSuperAdmin) {
+      if (liveLookup.pricingDoc) {
+        matchedCatalog = liveLookup.pricingDoc as Record<string, unknown>;
+      }
+    } else if (!matchedCatalog && liveLookup.pricingDoc) {
       matchedCatalog = liveLookup.pricingDoc as Record<string, unknown>;
     }
 
@@ -564,25 +611,58 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
       requestedAmountKobo: Number(amountKobo || 0),
       quantity: Number(quantity || 1),
       catalog: matchedCatalog,
+      directApiWholesale: isDirectApiSuperAdmin,
     });
 
     // Pure alphanumeric RequestID (no hyphens) for maximum ClubKonnect API compatibility
     const reference = `MSGR${Date.now()}${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
 
-    // Steps 7–9: Atomic balance validation, idempotency lock, and double-entry debit
-    await atomicReserveAndCreatePurchase({
-      userId: uid,
-      idempotencyKey: idempotencyKey.trim(),
-      reference,
-      serviceType: normalizedService,
-      providerCode: normalizedProvider,
-      productCode: normalizedProduct,
-      productName: pricing.productName,
-      recipient: recipient.trim(),
-      providerCostKobo: pricing.providerCostKobo,
-      sellingPriceKobo: pricing.sellingPriceKobo,
-      feeKobo: pricing.feeKobo,
-    });
+    if (isDirectApiSuperAdmin) {
+      // Verify live upstream API float can cover wholesale cost before executing
+      if (clubKonnect.isConfigured) {
+        const ckRes = await clubKonnect.getWalletBalance();
+        const rawBal = String(ckRes.balance ?? ckRes.Balance ?? ckRes.walletbalance ?? "").replace(/[^0-9.]/g, "");
+        const ckBalanceNaira = Number(rawBal);
+        if (rawBal && Number.isFinite(ckBalanceNaira)) {
+          const ckBalanceKobo = Math.round(ckBalanceNaira * 100);
+          if (ckBalanceKobo < pricing.providerCostKobo) {
+            res.status(400).json({
+              status: "FAILED",
+              message: `Insufficient live API balance (₦${(ckBalanceKobo / 100).toFixed(2)} available; ₦${(pricing.providerCostKobo / 100).toFixed(2)} wholesale cost required). Fund your API float in Admin Treasury first.`,
+            });
+            return;
+          }
+        }
+      }
+
+      // Direct API execution: audited record funded from live upstream API float (no customer wallet debit)
+      await atomicCreateDirectApiPurchase({
+        userId: uid,
+        idempotencyKey: idempotencyKey.trim(),
+        reference,
+        serviceType: normalizedService,
+        providerCode: normalizedProvider,
+        productCode: normalizedProduct,
+        productName: pricing.productName,
+        recipient: recipient.trim(),
+        providerCostKobo: pricing.providerCostKobo,
+      });
+    } else {
+      // Steps 7–9: Atomic balance validation, idempotency lock, and double-entry debit
+      await atomicReserveAndCreatePurchase({
+        userId: uid,
+        idempotencyKey: idempotencyKey.trim(),
+        reference,
+        serviceType: normalizedService,
+        providerCode: normalizedProvider,
+        productCode: normalizedProduct,
+        productName: pricing.productName,
+        recipient: recipient.trim(),
+        providerCostKobo: pricing.providerCostKobo,
+        sellingPriceKobo: pricing.sellingPriceKobo,
+        feeKobo: pricing.feeKobo,
+      });
+    }
 
     // Step 10–11: Submit to ClubKonnect & inspect response (NEVER refund on timeout!)
     try {
@@ -751,10 +831,12 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
       } else {
         await atomicReverseConfirmedFailure(reference, classified.reason);
         res.status(400).json({
-          status: "REVERSED",
+          status: isDirectApiSuperAdmin ? "FAILED" : "REVERSED",
           transactionId: reference,
           reference,
-          message: `Order failed and refunded: ${classified.reason}`,
+          message: isDirectApiSuperAdmin
+            ? `Direct API order declined (no app wallet debited): ${classified.reason}`
+            : `Order failed and refunded: ${classified.reason}`,
         });
       }
     } catch (providerErr) {

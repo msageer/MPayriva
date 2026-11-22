@@ -122,12 +122,21 @@ fun UtilityServicesScreen(
         Triple(ServiceType.BETTING, "Betting", Icons.Filled.SportsSoccer)
     )
 
-    val serviceTabs = remember(platformConfig.enabledServices) {
-        allServiceTabs.filter { (type, _, _) ->
-            when (type) {
-                ServiceType.WAEC_PIN -> platformConfig.isEducationEnabled()
-                ServiceType.SMILE -> platformConfig.isBroadbandEnabled()
-                else -> platformConfig.isServiceEnabled(type)
+    val liveCatalog = (liveCatalogState as? UiState.Success)?.data
+    val isLoadingLive = liveCatalogState is UiState.Loading
+    val isDirectApiMode = liveCatalog?.directApiMode == true
+    val directApiBalanceNaira = liveCatalog?.directApiBalanceNaira
+
+    val serviceTabs = remember(platformConfig.enabledServices, isDirectApiMode) {
+        if (isDirectApiMode) {
+            allServiceTabs
+        } else {
+            allServiceTabs.filter { (type, _, _) ->
+                when (type) {
+                    ServiceType.WAEC_PIN -> platformConfig.isEducationEnabled()
+                    ServiceType.SMILE -> platformConfig.isBroadbandEnabled()
+                    else -> platformConfig.isServiceEnabled(type)
+                }
             }
         }
     }
@@ -151,9 +160,6 @@ fun UtilityServicesScreen(
     var pendingDraft by remember { mutableStateOf<PendingPurchaseDraft?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
 
-    val liveCatalog = (liveCatalogState as? UiState.Success)?.data
-    val isLoadingLive = liveCatalogState is UiState.Loading
-
     // Shared form states
     var selectedNetwork by remember { mutableStateOf(NigerianProviders.telecomNetworks.first()) }
     var phoneInput by remember { mutableStateOf(CurrencyFormatter.toLocalElevenDigitPhone(profile.phoneNumber)) }
@@ -172,8 +178,8 @@ fun UtilityServicesScreen(
     var smartCardNo by remember { mutableStateOf("") }
     var selectedCablePkg by remember { mutableStateOf<LiveCatalogPlanDto?>(null) }
 
-    val waecEnabled = platformConfig.isServiceEnabled(ServiceType.WAEC_PIN)
-    val jambEnabled = platformConfig.isServiceEnabled(ServiceType.JAMB_PIN)
+    val waecEnabled = isDirectApiMode || platformConfig.isServiceEnabled(ServiceType.WAEC_PIN)
+    val jambEnabled = isDirectApiMode || platformConfig.isServiceEnabled(ServiceType.JAMB_PIN)
     var selectedExamType by remember(waecEnabled, jambEnabled) {
         mutableStateOf(if (waecEnabled) ServiceType.WAEC_PIN else ServiceType.JAMB_PIN)
     }
@@ -351,7 +357,9 @@ fun UtilityServicesScreen(
                                             providerName = selectedNetwork.name,
                                             sellingPriceKobo = sellingKobo,
                                             feeKobo = feeKobo,
-                                            walletBalanceKobo = profile.walletBalanceKobo
+                                            walletBalanceKobo = profile.walletBalanceKobo,
+                                            isDirectApiMode = isDirectApiMode,
+                                            directApiBalanceNaira = directApiBalanceNaira
                                         )
                                     )
                                 }
@@ -539,7 +547,9 @@ fun UtilityServicesScreen(
                                             providerName = plan.providerName,
                                             sellingPriceKobo = plan.sellingPriceKobo,
                                             feeKobo = plan.feeKobo,
-                                            walletBalanceKobo = profile.walletBalanceKobo
+                                            walletBalanceKobo = profile.walletBalanceKobo,
+                                            isDirectApiMode = isDirectApiMode,
+                                            directApiBalanceNaira = directApiBalanceNaira
                                         )
                                     )
                                 }
@@ -562,6 +572,8 @@ fun UtilityServicesScreen(
                         profile = profile,
                         isLoadingLive = isLoadingLive,
                         group = liveCatalog?.rechargeCards,
+                        isDirectApiMode = isDirectApiMode,
+                        directApiBalanceNaira = directApiBalanceNaira,
                         onRefreshAvailability = onRefreshLiveCatalog,
                         onCreateDraft = { pendingDraft = it }
                     )
@@ -572,6 +584,8 @@ fun UtilityServicesScreen(
                         profile = profile,
                         isLoadingLive = isLoadingLive,
                         group = liveCatalog?.dataCards,
+                        isDirectApiMode = isDirectApiMode,
+                        directApiBalanceNaira = directApiBalanceNaira,
                         onRefreshAvailability = onRefreshLiveCatalog,
                         onCreateDraft = { pendingDraft = it }
                     )
@@ -587,8 +601,11 @@ fun UtilityServicesScreen(
                         }
                     }
                     val chosenDisco = discoList.firstOrNull { it.first == selectedDiscoCode } ?: discoList.first()
-                    val feeKobo = chosenDisco.third
+                    val matchedLiveDisco = liveDiscos.firstOrNull { it.providerCode == chosenDisco.first }
+                    val feeKobo = if (isDirectApiMode) 0L else chosenDisco.third
+                    val powerDiscountPct = if (isDirectApiMode) (matchedLiveDisco?.discountPercent ?: 0.0) else 0.0
                     val powerKobo = CurrencyFormatter.nairaToKobo(powerAmountNaira) ?: 0L
+                    val effectivePowerPayableKobo = Math.round(powerKobo * (1.0 - powerDiscountPct / 100.0))
 
                     ServiceFormCard(title = "Electricity Bill Payment (${discoList.size} DisCos)") {
                         Text("Distribution Company (DisCo)", style = MaterialTheme.typography.labelLarge)
@@ -670,8 +687,13 @@ fun UtilityServicesScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         PricePreviewBar(
-                            label = "Total (incl. ${CurrencyFormatter.formatKobo(feeKobo)} fee)",
-                            amountKobo = powerKobo + feeKobo
+                            label = if (isDirectApiMode) {
+                                if (powerDiscountPct > 0) "Wholesale API (${String.format("%.1f", powerDiscountPct)}% off • ₦0 fee)"
+                                else "Wholesale API Total (₦0 fee)"
+                            } else {
+                                "Total (incl. ${CurrencyFormatter.formatKobo(feeKobo)} fee)"
+                            },
+                            amountKobo = effectivePowerPayableKobo + feeKobo
                         )
                         Spacer(modifier = Modifier.height(14.dp))
                         Button(
@@ -695,9 +717,11 @@ fun UtilityServicesScreen(
                                             title = title,
                                             recipient = verifiedCustomer?.customerName?.let { "$meterNumber ($it)" } ?: meterNumber,
                                             providerName = chosenDisco.second,
-                                            sellingPriceKobo = powerKobo,
+                                            sellingPriceKobo = effectivePowerPayableKobo,
                                             feeKobo = feeKobo,
-                                            walletBalanceKobo = profile.walletBalanceKobo
+                                            walletBalanceKobo = profile.walletBalanceKobo,
+                                            isDirectApiMode = isDirectApiMode,
+                                            directApiBalanceNaira = directApiBalanceNaira
                                         )
                                     )
                                 }
@@ -848,7 +872,9 @@ fun UtilityServicesScreen(
                                             providerName = chosenCable.second,
                                             sellingPriceKobo = pkg.sellingPriceKobo,
                                             feeKobo = pkg.feeKobo,
-                                            walletBalanceKobo = profile.walletBalanceKobo
+                                            walletBalanceKobo = profile.walletBalanceKobo,
+                                            isDirectApiMode = isDirectApiMode,
+                                            directApiBalanceNaira = directApiBalanceNaira
                                         )
                                     )
                                 }
@@ -979,7 +1005,9 @@ fun UtilityServicesScreen(
                                             providerName = if (selectedExamType == ServiceType.WAEC_PIN) "WAEC" else "JAMB",
                                             sellingPriceKobo = unitSelling * examQuantity,
                                             feeKobo = unitFee * examQuantity,
-                                            walletBalanceKobo = profile.walletBalanceKobo
+                                            walletBalanceKobo = profile.walletBalanceKobo,
+                                            isDirectApiMode = isDirectApiMode,
+                                            directApiBalanceNaira = directApiBalanceNaira
                                         )
                                     )
                                 }
@@ -1000,8 +1028,10 @@ fun UtilityServicesScreen(
                     BroadbandServiceForm(
                         profile = profile,
                         broadbandPlans = liveCatalog?.broadband.orEmpty(),
-                        smileEnabled = platformConfig.isServiceEnabled(ServiceType.SMILE),
-                        spectranetEnabled = platformConfig.isServiceEnabled(ServiceType.SPECTRANET),
+                        smileEnabled = isDirectApiMode || platformConfig.isServiceEnabled(ServiceType.SMILE),
+                        spectranetEnabled = isDirectApiMode || platformConfig.isServiceEnabled(ServiceType.SPECTRANET),
+                        isDirectApiMode = isDirectApiMode,
+                        directApiBalanceNaira = directApiBalanceNaira,
                         verifiedCustomer = verifiedCustomer,
                         isSubmitting = isSubmitting,
                         onClearVerification = onClearVerification,
@@ -1015,6 +1045,8 @@ fun UtilityServicesScreen(
                     BettingServiceForm(
                         profile = profile,
                         bettingProviders = liveCatalog?.betting.orEmpty(),
+                        isDirectApiMode = isDirectApiMode,
+                        directApiBalanceNaira = directApiBalanceNaira,
                         verifiedCustomer = verifiedCustomer,
                         isSubmitting = isSubmitting,
                         onClearVerification = onClearVerification,

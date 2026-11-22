@@ -131,39 +131,125 @@ internal fun LiveCatalogStatusBanner(
         }
 
         is UiState.Success -> {
-            // Subtle, useful white-label refresh bar — never discloses internal API providers
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            val catalogData = liveCatalogState.data
+            if (catalogData.directApiMode) {
+                val formattedApiBal = catalogData.directApiBalanceNaira
+                    ?.replace(",", "")
+                    ?.trim()
+                    ?.toDoubleOrNull()
+                    ?.let { CurrencyFormatter.formatKobo(Math.round(it * 100.0)) }
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = NavyDeep),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("super_admin_direct_api_banner")
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.CloudDone,
-                        contentDescription = "Rates updated",
-                        tint = StatusSuccess,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Instant delivery • Verified live tariff rates",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(
-                        onClick = onRefresh,
-                        modifier = Modifier.testTag("refresh_live_catalog_button")
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Brush.linearGradient(listOf(NavyDeep, NavyContainer)))
+                            .padding(horizontal = 14.dp, vertical = 12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Verified,
+                                contentDescription = "Direct API Mode",
+                                tint = EmeraldBright,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Super Admin Direct API Mode",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = PureWhite,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Direct wholesale API rates • 0% markup • ₦0 fee • All live services unlocked",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = PureWhite.copy(alpha = 0.8f)
+                                )
+                            }
+                            IconButton(
+                                onClick = onRefresh,
+                                modifier = Modifier.testTag("refresh_live_catalog_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Refresh,
+                                    contentDescription = "Refresh live API rates and balance",
+                                    tint = EmeraldBright
+                                )
+                            }
+                        }
+                        if (formattedApiBal != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = PureWhite.copy(alpha = 0.1f)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Live API Float Balance",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = PureWhite.copy(alpha = 0.82f)
+                                    )
+                                    Text(
+                                        text = formattedApiBal,
+                                        style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMono),
+                                        color = EmeraldBright,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Subtle, useful white-label refresh bar — never discloses internal API providers
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Refresh,
-                            contentDescription = "Refresh service rates",
-                            tint = MaterialTheme.colorScheme.primary
+                            imageVector = Icons.Filled.CloudDone,
+                            contentDescription = "Rates updated",
+                            tint = StatusSuccess,
+                            modifier = Modifier.size(18.dp)
                         )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Instant delivery • Verified live tariff rates",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = onRefresh,
+                            modifier = Modifier.testTag("refresh_live_catalog_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Refresh,
+                                contentDescription = "Refresh service rates",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
             }
@@ -517,6 +603,8 @@ internal fun RechargeCardEpinForm(
     profile: UserProfile,
     isLoadingLive: Boolean,
     group: LiveServiceAvailabilityGroupDto?,
+    isDirectApiMode: Boolean = false,
+    directApiBalanceNaira: String? = null,
     onRefreshAvailability: () -> Unit,
     onCreateDraft: (PendingPurchaseDraft) -> Unit
 ) {
@@ -743,7 +831,9 @@ internal fun RechargeCardEpinForm(
                             providerName = selectedNet.name,
                             sellingPriceKobo = totalKobo,
                             feeKobo = 0L,
-                            walletBalanceKobo = profile.walletBalanceKobo
+                            walletBalanceKobo = profile.walletBalanceKobo,
+                            isDirectApiMode = isDirectApiMode,
+                            directApiBalanceNaira = directApiBalanceNaira
                         )
                     )
                 )
@@ -771,6 +861,8 @@ internal fun DataCardEpinForm(
     profile: UserProfile,
     isLoadingLive: Boolean,
     group: LiveServiceAvailabilityGroupDto?,
+    isDirectApiMode: Boolean = false,
+    directApiBalanceNaira: String? = null,
     onRefreshAvailability: () -> Unit,
     onCreateDraft: (PendingPurchaseDraft) -> Unit
 ) {
@@ -860,7 +952,9 @@ internal fun DataCardEpinForm(
                                 providerName = plan.providerName,
                                 sellingPriceKobo = plan.sellingPriceKobo * quantity,
                                 feeKobo = plan.feeKobo * quantity,
-                                walletBalanceKobo = profile.walletBalanceKobo
+                                walletBalanceKobo = profile.walletBalanceKobo,
+                                isDirectApiMode = isDirectApiMode,
+                                directApiBalanceNaira = directApiBalanceNaira
                             )
                         )
                     )
@@ -900,6 +994,8 @@ internal fun BroadbandServiceForm(
     broadbandPlans: List<LiveCatalogPlanDto>,
     smileEnabled: Boolean = true,
     spectranetEnabled: Boolean = true,
+    isDirectApiMode: Boolean = false,
+    directApiBalanceNaira: String? = null,
     verifiedCustomer: CustomerVerificationResponse?,
     isSubmitting: Boolean,
     onClearVerification: () -> Unit,
@@ -1127,7 +1223,9 @@ internal fun BroadbandServiceForm(
                                 providerName = plan.providerName,
                                 sellingPriceKobo = plan.sellingPriceKobo * qty,
                                 feeKobo = plan.feeKobo * qty,
-                                walletBalanceKobo = profile.walletBalanceKobo
+                                walletBalanceKobo = profile.walletBalanceKobo,
+                                isDirectApiMode = isDirectApiMode,
+                                directApiBalanceNaira = directApiBalanceNaira
                             )
                         )
                     )
@@ -1150,6 +1248,8 @@ internal fun BroadbandServiceForm(
 internal fun BettingServiceForm(
     profile: UserProfile,
     bettingProviders: List<LiveCatalogPlanDto>,
+    isDirectApiMode: Boolean = false,
+    directApiBalanceNaira: String? = null,
     verifiedCustomer: CustomerVerificationResponse?,
     isSubmitting: Boolean,
     onClearVerification: () -> Unit,
@@ -1259,7 +1359,9 @@ internal fun BettingServiceForm(
                                 providerName = selectedProvider.providerName,
                                 sellingPriceKobo = amountKobo,
                                 feeKobo = feeKobo,
-                                walletBalanceKobo = profile.walletBalanceKobo
+                                walletBalanceKobo = profile.walletBalanceKobo,
+                                isDirectApiMode = isDirectApiMode,
+                                directApiBalanceNaira = directApiBalanceNaira
                             )
                         )
                     )

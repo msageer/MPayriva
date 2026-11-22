@@ -156,6 +156,8 @@ data class LiveStorefrontCatalogResponse(
     val status: String = "success",
     val fetchedAt: String = "",
     val clubKonnectConnected: Boolean = false,
+    val directApiMode: Boolean = false,
+    val directApiBalanceNaira: String? = null,
     val totalPlans: Int = 0,
     val airtime: List<LiveCatalogPlanDto> = emptyList(),
     val data: List<LiveCatalogPlanDto> = emptyList(),

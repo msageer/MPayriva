@@ -49,10 +49,25 @@ data class PurchaseSummaryItem(
     val providerName: String,
     val sellingPriceKobo: Long,
     val feeKobo: Long,
-    val walletBalanceKobo: Long
+    val walletBalanceKobo: Long,
+    val isDirectApiMode: Boolean = false,
+    val directApiBalanceNaira: String? = null
 ) {
     val totalDebitKobo: Long get() = sellingPriceKobo + feeKobo
-    val hasSufficientBalance: Boolean get() = walletBalanceKobo >= totalDebitKobo
+    val directApiBalanceKobo: Long?
+        get() = directApiBalanceNaira
+            ?.replace(",", "")
+            ?.trim()
+            ?.toDoubleOrNull()
+            ?.let { Math.round(it * 100.0) }
+
+    val hasSufficientBalance: Boolean
+        get() = if (isDirectApiMode) {
+            val apiBal = directApiBalanceKobo
+            apiBal == null || apiBal >= totalDebitKobo
+        } else {
+            walletBalanceKobo >= totalDebitKobo
+        }
 }
 
 @Composable
@@ -101,6 +116,22 @@ fun TransactionPinConfirmationDialog(
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+                if (summary.isDirectApiMode) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f))
+                    ) {
+                        Text(
+                            text = "DIRECT API WHOLESALE • 0% MARKUP • ₦0 FEE",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // Transaction summary card
@@ -114,27 +145,46 @@ fun TransactionPinConfirmationDialog(
                         SummaryRow("Service", summary.title)
                         SummaryRow("Provider", summary.providerName)
                         SummaryRow("Recipient", summary.recipient)
-                        SummaryRow("Price", CurrencyFormatter.formatKobo(summary.sellingPriceKobo), mono = true)
+                        SummaryRow(
+                            if (summary.isDirectApiMode) "Wholesale API Cost" else "Price",
+                            CurrencyFormatter.formatKobo(summary.sellingPriceKobo),
+                            mono = true
+                        )
                         SummaryRow("Service Fee", CurrencyFormatter.formatKobo(summary.feeKobo), mono = true)
                         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                         SummaryRow(
-                            "Total Debit",
+                            if (summary.isDirectApiMode) "Direct API Debit" else "Total Debit",
                             CurrencyFormatter.formatKobo(summary.totalDebitKobo),
                             mono = true,
                             highlight = true
                         )
-                        SummaryRow(
-                            "Available Wallet",
-                            CurrencyFormatter.formatKobo(summary.walletBalanceKobo),
-                            mono = true
-                        )
+                        if (summary.isDirectApiMode) {
+                            SummaryRow("Funding Source", "Live API Float (Direct)")
+                            summary.directApiBalanceKobo?.let { apiBal ->
+                                SummaryRow(
+                                    "Live API Balance",
+                                    CurrencyFormatter.formatKobo(apiBal),
+                                    mono = true
+                                )
+                            }
+                        } else {
+                            SummaryRow(
+                                "Available Wallet",
+                                CurrencyFormatter.formatKobo(summary.walletBalanceKobo),
+                                mono = true
+                            )
+                        }
                     }
                 }
 
                 if (!summary.hasSufficientBalance) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "Insufficient wallet balance. Fund your Naira wallet to complete this purchase.",
+                        text = if (summary.isDirectApiMode) {
+                            "Insufficient live API float balance. Transfer funds to your API balance in Admin Treasury first."
+                        } else {
+                            "Insufficient wallet balance. Fund your Naira wallet to complete this purchase."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                         fontWeight = FontWeight.Medium
@@ -252,7 +302,10 @@ fun TransactionPinConfirmationDialog(
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Text("Pay Now", fontWeight = FontWeight.Bold)
+                            Text(
+                                text = if (summary.isDirectApiMode) "Execute Direct API" else "Pay Now",
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }

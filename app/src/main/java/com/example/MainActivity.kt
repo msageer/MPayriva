@@ -458,6 +458,8 @@ private fun AuthenticatedFintechShell(
                                                     platformConfig = platformConfig,
                                                     balanceVisible = balanceVisible,
                                                     isAdmin = isAdmin,
+                                                    isDirectApiMode = (liveCatalogState as? UiState.Success)?.data?.directApiMode == true,
+                                                    directApiBalanceNaira = (liveCatalogState as? UiState.Success)?.data?.directApiBalanceNaira,
                                                     isBackendConfigured = isBackendConfigured,
                                                     unreadNotificationCount = unreadCount,
                                                     recentTransactions = transactions,

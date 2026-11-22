@@ -251,5 +251,86 @@ test("Service pricing rules compute Airtime spread & Electricity convenience fee
   assert.equal(elec.netProfitKobo, 11000); // ₦100 fee + ₦10 commission = ₦110 per ₦1,000
 });
 
+test("Super Admin directApiWholesale charges exact upstream API cost with zero fee and zero margin", () => {
+  // Airtime: full 3% API commission passed directly to Super Admin (₦970 instead of ₦990)
+  const airtime = computeAuthorizedPurchasePricing({
+    serviceType: "AIRTIME",
+    providerCode: "01",
+    productCode: "airtime",
+    requestedAmountKobo: 100000,
+    catalog: {
+      productName: "MTN Airtime",
+      discountPercent: 1.0,
+      commissionPercent: 3.0,
+      feeKobo: 5000,
+    },
+    directApiWholesale: true,
+  });
+  assert.equal(airtime.faceValueNaira, 1000);
+  assert.equal(airtime.providerCostKobo, 97000);
+  assert.equal(airtime.sellingPriceKobo, 97000);
+  assert.equal(airtime.feeKobo, 0);
+  assert.equal(airtime.totalDebitKobo, 97000);
+  assert.equal(airtime.grossMarginKobo, 0);
+
+  // Data: exact wholesale cost (₦250 instead of retail ₦290)
+  const data = computeAuthorizedPurchasePricing({
+    serviceType: "DATA",
+    providerCode: "01",
+    productCode: "1000.0",
+    requestedAmountKobo: 25000,
+    catalog: {
+      productName: "MTN 1GB SME",
+      providerCostKobo: 25000,
+      sellingPriceKobo: 29000,
+      feeKobo: 2000,
+    },
+    directApiWholesale: true,
+  });
+  assert.equal(data.sellingPriceKobo, 25000);
+  assert.equal(data.feeKobo, 0);
+  assert.equal(data.totalDebitKobo, 25000);
+  assert.equal(data.grossMarginKobo, 0);
+
+  // Electricity: ₦0 convenience fee + full 1% DisCo commission discount
+  const elec = computeAuthorizedPurchasePricing({
+    serviceType: "ELECTRICITY",
+    providerCode: "02",
+    productCode: "prepaid",
+    requestedAmountKobo: 500000,
+    catalog: {
+      productName: "IKEDC Prepaid",
+      feeKobo: 10000,
+      commissionPercent: 1.0,
+    },
+    directApiWholesale: true,
+  });
+  assert.equal(elec.faceValueNaira, 5000);
+  assert.equal(elec.feeKobo, 0);
+  assert.equal(elec.providerCostKobo, 495000);
+  assert.equal(elec.sellingPriceKobo, 495000);
+  assert.equal(elec.totalDebitKobo, 495000);
+  assert.equal(elec.grossMarginKobo, 0);
+
+  // Recharge Card e-PIN: exact wholesale cost × quantity
+  const epin = computeAuthorizedPurchasePricing({
+    serviceType: "RECHARGE_CARD",
+    providerCode: "01",
+    productCode: "200",
+    requestedAmountKobo: 100000,
+    quantity: 5,
+    catalog: {
+      productName: "MTN ₦200 e-PIN",
+      providerCostKobo: 19300,
+      sellingPriceKobo: 20000,
+      feeKobo: 1000,
+    },
+    directApiWholesale: true,
+  });
+  assert.equal(epin.totalDebitKobo, 96500);
+  assert.equal(epin.grossMarginKobo, 0);
+});
+
+
 
 

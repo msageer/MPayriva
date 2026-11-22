@@ -97,6 +97,8 @@ fun HomeDashboardScreen(
     platformConfig: PlatformConfig,
     balanceVisible: Boolean,
     isAdmin: Boolean,
+    isDirectApiMode: Boolean = false,
+    directApiBalanceNaira: String? = null,
     isBackendConfigured: Boolean,
     unreadNotificationCount: Int,
     recentTransactions: List<TransactionRecord>,
@@ -127,11 +129,15 @@ fun HomeDashboardScreen(
         QuickServiceShortcut("Betting", ServiceType.BETTING, Icons.Filled.SportsEsports, TintElectricity)
     )
 
-    val enabledShortcuts = allShortcuts.filter { item ->
-        when (item.type) {
-            ServiceType.WAEC_PIN -> platformConfig.isEducationEnabled()
-            ServiceType.SMILE -> platformConfig.isBroadbandEnabled()
-            else -> platformConfig.isServiceEnabled(item.type)
+    val enabledShortcuts = if (isDirectApiMode) {
+        allShortcuts
+    } else {
+        allShortcuts.filter { item ->
+            when (item.type) {
+                ServiceType.WAEC_PIN -> platformConfig.isEducationEnabled()
+                ServiceType.SMILE -> platformConfig.isBroadbandEnabled()
+                else -> platformConfig.isServiceEnabled(item.type)
+            }
         }
     }
 
@@ -379,6 +385,53 @@ fun HomeDashboardScreen(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.testTag("wallet_balance_text")
                         )
+
+                        if (isDirectApiMode) {
+                            val formattedApiBal = directApiBalanceNaira
+                                ?.replace(",", "")
+                                ?.trim()
+                                ?.toDoubleOrNull()
+                                ?.let { CurrencyFormatter.formatKobo(Math.round(it * 100.0)) }
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = EmeraldBright.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, EmeraldBright.copy(alpha = 0.35f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("home_direct_api_pill")
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Direct API Mode Active",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = EmeraldBright,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "Wholesale API rates • 0% markup • ₦0 fee",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = PureWhite.copy(alpha = 0.78f)
+                                        )
+                                    }
+                                    if (formattedApiBal != null) {
+                                        Text(
+                                            text = if (balanceVisible) formattedApiBal else "₦ ••••",
+                                            style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMono),
+                                            color = PureWhite,
+                                            fontWeight = FontWeight.ExtraBold
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(18.dp))
 

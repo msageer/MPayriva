@@ -184,14 +184,16 @@ export function computeAuthorizedPurchasePricing(params: {
   requestedAmountKobo: number;
   quantity?: number;
   catalog?: CatalogPricingDoc | null;
+  directApiWholesale?: boolean;
 }): ComputedPurchasePricing {
   const serviceType = String(params.serviceType || "").toUpperCase();
   const safeQty = Math.max(1, Math.min(50, Math.floor(Number(params.quantity || 1))));
   const requestedKobo = Math.round(Number(params.requestedAmountKobo || 0));
   const catalog = params.catalog ?? null;
+  const isDirectWholesale = params.directApiWholesale === true;
 
   let productName = String(catalog?.productName || `${serviceType} (${params.providerCode})`);
-  const feeKobo = Math.max(0, Math.round(Number(catalog?.feeKobo ?? 0)));
+  const feeKobo = isDirectWholesale ? 0 : Math.max(0, Math.round(Number(catalog?.feeKobo ?? 0)));
 
   let faceValueNaira = Math.round(requestedKobo / 100);
   let sellingPriceKobo = requestedKobo;
@@ -205,8 +207,10 @@ export function computeAuthorizedPurchasePricing(params: {
       faceValueNaira = Math.round(requestedKobo / 100);
       const discount = Math.min(50, Math.max(0, Number(catalog?.discountPercent ?? 0)));
       const commission = Math.min(50, Math.max(0, Number(catalog?.commissionPercent ?? 0)));
-      sellingPriceKobo = Math.round(requestedKobo * (1 - discount / 100));
       providerCostKobo = Math.round(requestedKobo * (1 - commission / 100));
+      sellingPriceKobo = isDirectWholesale
+        ? providerCostKobo
+        : Math.round(requestedKobo * (1 - discount / 100));
       break;
     }
 
@@ -216,8 +220,8 @@ export function computeAuthorizedPurchasePricing(params: {
       }
       faceValueNaira = Math.round(requestedKobo / 100);
       const commission = Math.min(50, Math.max(0, Number(catalog?.commissionPercent ?? 0)));
-      sellingPriceKobo = requestedKobo;
       providerCostKobo = Math.round(requestedKobo * (1 - commission / 100));
+      sellingPriceKobo = isDirectWholesale ? providerCostKobo : requestedKobo;
       break;
     }
 
@@ -226,8 +230,9 @@ export function computeAuthorizedPurchasePricing(params: {
         throw new Error("Betting wallet funding must be between ₦100 and ₦500,000.");
       }
       faceValueNaira = Math.round(requestedKobo / 100);
-      sellingPriceKobo = requestedKobo;
-      providerCostKobo = requestedKobo;
+      const commission = Math.min(50, Math.max(0, Number(catalog?.commissionPercent ?? 0)));
+      providerCostKobo = Math.round(requestedKobo * (1 - commission / 100));
+      sellingPriceKobo = isDirectWholesale ? providerCostKobo : requestedKobo;
       break;
     }
 
@@ -238,11 +243,14 @@ export function computeAuthorizedPurchasePricing(params: {
     case "JAMB_PIN":
     case "SMILE":
     case "SPECTRANET": {
-      if (!catalog || Number(catalog.sellingPriceKobo ?? 0) <= 0) {
+      const catalogSell = Math.round(Number(catalog?.sellingPriceKobo ?? 0));
+      const catalogCost = Math.round(Number(catalog?.providerCostKobo ?? catalogSell));
+      const effectiveUnitCost = catalogCost > 0 ? catalogCost : catalogSell;
+      if (!catalog || (isDirectWholesale ? effectiveUnitCost <= 0 : catalogSell <= 0)) {
         throw new Error(`No active pricing catalog entry found for ${serviceType} (${params.productCode}).`);
       }
-      sellingPriceKobo = Math.round(Number(catalog.sellingPriceKobo)) * safeQty;
-      providerCostKobo = Math.round(Number(catalog.providerCostKobo ?? catalog.sellingPriceKobo)) * safeQty;
+      providerCostKobo = effectiveUnitCost * safeQty;
+      sellingPriceKobo = isDirectWholesale ? providerCostKobo : catalogSell * safeQty;
       faceValueNaira = Math.round(sellingPriceKobo / 100);
       break;
     }
@@ -254,9 +262,14 @@ export function computeAuthorizedPurchasePricing(params: {
       }
       faceValueNaira = denomNaira;
       const unitFaceKobo = denomNaira * 100;
-      if (catalog && Number(catalog.sellingPriceKobo ?? 0) > 0) {
-        sellingPriceKobo = Math.round(Number(catalog.sellingPriceKobo)) * safeQty;
-        providerCostKobo = Math.round(Number(catalog.providerCostKobo ?? catalog.sellingPriceKobo)) * safeQty;
+      const catalogSell = Math.round(Number(catalog?.sellingPriceKobo ?? 0));
+      const catalogCost = Math.round(Number(catalog?.providerCostKobo ?? catalogSell));
+      if (isDirectWholesale && catalogCost > 0) {
+        providerCostKobo = catalogCost * safeQty;
+        sellingPriceKobo = providerCostKobo;
+      } else if (catalog && catalogSell > 0) {
+        sellingPriceKobo = catalogSell * safeQty;
+        providerCostKobo = (catalogCost > 0 ? catalogCost : catalogSell) * safeQty;
       } else {
         sellingPriceKobo = unitFaceKobo * safeQty;
         providerCostKobo = unitFaceKobo * safeQty;
