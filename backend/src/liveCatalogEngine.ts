@@ -1,6 +1,15 @@
 import { db } from "./config";
+import { FieldValue } from "firebase-admin/firestore";
 import { ClubKonnectClient } from "./clubKonnectClient";
-import { CatalogPricingDoc } from "./pricingEngine";
+import {
+  CatalogPricingDoc,
+  DEFAULT_SERVICE_PRICING_RULES,
+  PlatformPricingRulesMap,
+  ServicePricingRule,
+  SupportedServiceType,
+  computePlanPricingWithRule,
+  sanitizeServicePricingRule,
+} from "./pricingEngine";
 
 export interface LiveCatalogPlan {
   id: string;
@@ -17,6 +26,9 @@ export interface LiveCatalogPlan {
   feeKobo: number;
   discountPercent: number;
   commissionPercent: number;
+  netProfitKobo: number;
+  profitMarginPercent: number;
+  hasCustomOverride: boolean;
   available: boolean;
 }
 
@@ -257,6 +269,9 @@ function parseNestedProductArray(
           feeKobo: serviceType === "ELECTRICITY" ? 10000 : 0,
           discountPercent: 0,
           commissionPercent: 0,
+          netProfitKobo: 0,
+          profitMarginPercent: 0,
+          hasCustomOverride: false,
           available: isAvailable,
         });
       }
@@ -369,6 +384,9 @@ function parseAirtimeDiscounts(raw: Record<string, unknown>): LiveCatalogPlan[] 
       feeKobo: 0,
       discountPercent: customerDiscount,
       commissionPercent: commission,
+      netProfitKobo: 0,
+      profitMarginPercent: 0,
+      hasCustomOverride: false,
       available: true,
     };
   });
@@ -404,6 +422,9 @@ function parseElectricityDiscos(raw: Record<string, unknown>): LiveCatalogPlan[]
         feeKobo: 10000,
         discountPercent: 0,
         commissionPercent: 1.0,
+        netProfitKobo: 0,
+        profitMarginPercent: 0,
+        hasCustomOverride: false,
         available: true,
       });
     }
@@ -444,6 +465,9 @@ function parseElectricityDiscos(raw: Record<string, unknown>): LiveCatalogPlan[]
     feeKobo: 10000,
     discountPercent: 0,
     commissionPercent: 1.0,
+    netProfitKobo: 0,
+    profitMarginPercent: 0,
+    hasCustomOverride: false,
     available: true,
   }));
 }
@@ -478,6 +502,9 @@ function parseBettingCompanies(raw: Record<string, unknown>): LiveCatalogPlan[] 
         feeKobo: 5000,
         discountPercent: 0,
         commissionPercent: 0,
+        netProfitKobo: 0,
+        profitMarginPercent: 0,
+        hasCustomOverride: false,
         available: true,
       });
     }
@@ -586,6 +613,9 @@ function parseRechargeCardAvailability(
             feeKobo: 0,
             discountPercent: 0,
             commissionPercent: commPct,
+            netProfitKobo: 0,
+            profitMarginPercent: 0,
+            hasCustomOverride: false,
             available: true,
           });
         }
@@ -640,9 +670,66 @@ function parseDataCardAvailability(
   };
 }
 
+const SUPPORTED_SERVICE_KEYS: SupportedServiceType[] = [
+  "AIRTIME",
+  "DATA",
+  "ELECTRICITY",
+  "CABLE_TV",
+  "RECHARGE_CARD",
+  "DATA_CARD",
+  "WAEC_PIN",
+  "JAMB_PIN",
+  "SMILE",
+  "SPECTRANET",
+  "BETTING",
+];
+
+export async function getPlatformPricingRules(): Promise<PlatformPricingRulesMap> {
+  const snap = await db.collection("platformConfig").doc("pricingRules").get();
+  const rawRules = (snap.exists ? snap.data()?.rules : null) as
+    | Partial<Record<SupportedServiceType, Partial<ServicePricingRule>>>
+    | null;
+
+  const resolved = {} as PlatformPricingRulesMap;
+  for (const key of SUPPORTED_SERVICE_KEYS) {
+    resolved[key] = sanitizeServicePricingRule(key, rawRules?.[key]);
+  }
+  return resolved;
+}
+
+export async function savePlatformPricingRules(
+  incomingRules: Record<string, Partial<ServicePricingRule>>,
+  updatedBy: string
+): Promise<PlatformPricingRulesMap> {
+  const existing = await getPlatformPricingRules();
+  const merged = {} as PlatformPricingRulesMap;
+  for (const key of SUPPORTED_SERVICE_KEYS) {
+    const incoming = incomingRules[key];
+    merged[key] = incoming
+      ? sanitizeServicePricingRule(key, { ...existing[key], ...incoming })
+      : existing[key];
+  }
+
+  await db
+    .collection("platformConfig")
+    .doc("pricingRules")
+    .set(
+      {
+        rules: merged,
+        updatedBy,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+  invalidateLiveCatalogCache();
+  return merged;
+}
+
 function applyAdminCatalogOverrides(
   livePlans: LiveCatalogPlan[],
-  adminDocs: Array<Record<string, unknown>>
+  adminDocs: Array<Record<string, unknown>>,
+  pricingRules: PlatformPricingRulesMap
 ): LiveCatalogPlan[] {
   const byExact = new Map<string, Record<string, unknown>>();
   const byProvider = new Map<string, Record<string, unknown>>();
@@ -657,6 +744,28 @@ function applyAdminCatalogOverrides(
 
   return livePlans
     .map((plan) => {
+      // Step 1: Apply platform-wide service pricing rule to compute selling price & profit from ClubKonnect live cost
+      const svcKey = (plan.serviceType.toUpperCase() as SupportedServiceType);
+      const rule = pricingRules[svcKey] ?? DEFAULT_SERVICE_PRICING_RULES.DATA;
+      const ruled = computePlanPricingWithRule({
+        serviceType: plan.serviceType,
+        productCode: plan.productCode,
+        providerCostKobo: plan.providerCostKobo,
+        commissionPercent: plan.commissionPercent,
+        rule,
+      });
+
+      const basePlan: LiveCatalogPlan = {
+        ...plan,
+        sellingPriceKobo: ruled.sellingPriceKobo,
+        feeKobo: ruled.feeKobo,
+        discountPercent: ruled.discountPercent,
+        netProfitKobo: ruled.netProfitKobo,
+        profitMarginPercent: ruled.profitMarginPercent,
+        hasCustomOverride: false,
+      };
+
+      // Step 2: Check for explicit per-plan Admin override in /serviceCatalog
       const exactKey = `${plan.serviceType}|${plan.providerCode.toLowerCase()}|${plan.productCode.toLowerCase()}`;
       const provKey = `${plan.serviceType}|${plan.providerCode.toLowerCase()}`;
       const override =
@@ -665,29 +774,46 @@ function applyAdminCatalogOverrides(
           ? byProvider.get(provKey) || byProvider.get(`${plan.serviceType}|all_discos`)
           : undefined);
 
-      if (!override) return plan;
+      if (!override) return basePlan;
 
       const enabled = override.enabled !== false;
       const overrideSell = Number(override.sellingPriceKobo ?? 0);
       const overrideCost = Number(override.providerCostKobo ?? 0);
-      const overrideFee = Number(override.feeKobo ?? plan.feeKobo);
-      const overrideDisc = Number(override.discountPercent ?? plan.discountPercent);
-      const overrideComm = Number(override.commissionPercent ?? plan.commissionPercent);
+      const overrideFee = Number(override.feeKobo ?? basePlan.feeKobo);
+      const overrideDisc = Number(override.discountPercent ?? basePlan.discountPercent);
+      const overrideComm = Number(override.commissionPercent ?? basePlan.commissionPercent);
 
-      const finalCost = plan.providerCostKobo > 0 ? plan.providerCostKobo : overrideCost;
-      const finalSell =
-        overrideSell > 0
-          ? Math.max(overrideSell, finalCost)
-          : plan.sellingPriceKobo;
+      const finalCost = basePlan.providerCostKobo > 0 ? basePlan.providerCostKobo : overrideCost;
+      const finalSell = overrideSell > 0 ? overrideSell : basePlan.sellingPriceKobo;
+      const finalFee = Number.isFinite(overrideFee) ? overrideFee : basePlan.feeKobo;
+      const finalDisc = Number.isFinite(overrideDisc) ? overrideDisc : basePlan.discountPercent;
+      const finalComm = Number.isFinite(overrideComm) ? overrideComm : basePlan.commissionPercent;
+
+      // Recompute exact net profit & margin after override
+      let netProfitKobo = 0;
+      let profitMarginPercent = 0;
+      if (plan.serviceType === "AIRTIME" || plan.serviceType === "ELECTRICITY" || plan.serviceType === "BETTING") {
+        const sampleFaceKobo = 100000;
+        const sampleCostKobo = Math.round(sampleFaceKobo * (1 - finalComm / 100));
+        const sampleSellKobo = Math.round(sampleFaceKobo * (1 - finalDisc / 100));
+        netProfitKobo = sampleSellKobo + finalFee - sampleCostKobo;
+        profitMarginPercent = Number(((netProfitKobo / sampleFaceKobo) * 100).toFixed(2));
+      } else {
+        netProfitKobo = finalSell + finalFee - finalCost;
+        profitMarginPercent = finalCost > 0 ? Number(((netProfitKobo / finalCost) * 100).toFixed(2)) : 0;
+      }
 
       return {
-        ...plan,
+        ...basePlan,
         providerCostKobo: finalCost,
         sellingPriceKobo: finalSell,
-        feeKobo: Number.isFinite(overrideFee) ? overrideFee : plan.feeKobo,
-        discountPercent: Number.isFinite(overrideDisc) ? overrideDisc : plan.discountPercent,
-        commissionPercent: Number.isFinite(overrideComm) ? overrideComm : plan.commissionPercent,
-        available: plan.available && enabled,
+        feeKobo: finalFee,
+        discountPercent: finalDisc,
+        commissionPercent: finalComm,
+        netProfitKobo,
+        profitMarginPercent,
+        hasCustomOverride: true,
+        available: basePlan.available && enabled,
       };
     })
     .filter((p) => p.available || p.serviceType === "RECHARGE_CARD" || p.serviceType === "DATA_CARD");
@@ -706,7 +832,10 @@ export async function getLiveStorefrontCatalog(
     return cachedCatalog.data;
   }
 
-  const adminCatalogSnap = await db.collection("serviceCatalog").get();
+  const [adminCatalogSnap, pricingRules] = await Promise.all([
+    db.collection("serviceCatalog").get(),
+    getPlatformPricingRules(),
+  ]);
   const adminDocs = adminCatalogSnap.docs.map((d) => ({ id: d.id, ...d.data() })) as Array<Record<string, unknown>>;
 
   if (!clubKonnect.isConfigured) {
@@ -757,11 +886,13 @@ export async function getLiveStorefrontCatalog(
 
   const airtime = applyAdminCatalogOverrides(
     parseAirtimeDiscounts(airtimeRes.status === "fulfilled" ? airtimeRes.value : {}),
-    adminDocs
+    adminDocs,
+    pricingRules
   );
   const data = applyAdminCatalogOverrides(
     dataRes.status === "fulfilled" ? parseNestedProductArray(dataRes.value, "DATA") : [],
-    adminDocs
+    adminDocs,
+    pricingRules
   ).sort(
     (a, b) =>
       a.providerCode.localeCompare(b.providerCode) ||
@@ -771,29 +902,33 @@ export async function getLiveStorefrontCatalog(
 
   const electricity = applyAdminCatalogOverrides(
     parseElectricityDiscos(discoRes.status === "fulfilled" ? discoRes.value : {}),
-    adminDocs
+    adminDocs,
+    pricingRules
   );
 
   const cableTv = applyAdminCatalogOverrides(
     cableRes.status === "fulfilled" ? parseNestedProductArray(cableRes.value, "CABLE_TV") : [],
-    adminDocs
+    adminDocs,
+    pricingRules
   ).sort((a, b) => a.providerCode.localeCompare(b.providerCode) || a.sellingPriceKobo - b.sellingPriceKobo);
 
   const waec = applyAdminCatalogOverrides(
     waecRes.status === "fulfilled" ? parseNestedProductArray(waecRes.value, "WAEC_PIN", "waec", "WAEC") : [],
-    adminDocs
+    adminDocs,
+    pricingRules
   );
 
   const jamb = applyAdminCatalogOverrides(
     jambRes.status === "fulfilled" ? parseNestedProductArray(jambRes.value, "JAMB_PIN", "jamb", "JAMB") : [],
-    adminDocs
+    adminDocs,
+    pricingRules
   );
 
   const rawRecharge = parseRechargeCardAvailability(
     epinRes.status === "fulfilled" ? epinRes.value : null,
     epinRes.status === "rejected"
   );
-  const rechargeItems = applyAdminCatalogOverrides(rawRecharge.items, adminDocs);
+  const rechargeItems = applyAdminCatalogOverrides(rawRecharge.items, adminDocs, pricingRules);
   const rechargeCards: LiveServiceAvailabilityGroup = {
     available: rechargeItems.some((i) => i.available),
     statusMessage: rawRecharge.statusMessage,
@@ -804,7 +939,7 @@ export async function getLiveStorefrontCatalog(
     dataCardRes.status === "fulfilled" ? dataCardRes.value : null,
     dataCardRes.status === "rejected"
   );
-  const dataCardItems = applyAdminCatalogOverrides(rawDataCards.items, adminDocs);
+  const dataCardItems = applyAdminCatalogOverrides(rawDataCards.items, adminDocs, pricingRules);
   const dataCards: LiveServiceAvailabilityGroup = {
     available: dataCardItems.some((i) => i.available),
     statusMessage: rawDataCards.statusMessage,
@@ -819,7 +954,7 @@ export async function getLiveStorefrontCatalog(
     spectranetRes.status === "fulfilled"
       ? parseNestedProductArray(spectranetRes.value, "SPECTRANET", "spectranet", "Spectranet")
       : [];
-  const broadband = applyAdminCatalogOverrides([...smilePlans, ...spectranetPlans], adminDocs).sort(
+  const broadband = applyAdminCatalogOverrides([...smilePlans, ...spectranetPlans], adminDocs, pricingRules).sort(
     (a, b) =>
       a.serviceType.localeCompare(b.serviceType) ||
       categoryRank(BROADBAND_CATEGORY_ORDER, a.categoryGroup) - categoryRank(BROADBAND_CATEGORY_ORDER, b.categoryGroup) ||
@@ -828,7 +963,8 @@ export async function getLiveStorefrontCatalog(
 
   const betting = applyAdminCatalogOverrides(
     bettingRes.status === "fulfilled" ? parseBettingCompanies(bettingRes.value) : [],
-    adminDocs
+    adminDocs,
+    pricingRules
   );
 
   const totalPlans =

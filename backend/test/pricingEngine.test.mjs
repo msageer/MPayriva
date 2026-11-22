@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   classifyClubKonnectStatus,
   computeAuthorizedPurchasePricing,
+  computePlanPricingWithRule,
+  sanitizeServicePricingRule,
 } from "../src/pricingEngine.ts";
 
 test("Airtime preserves exact faceValueNaira while charging discounted selling price", () => {
@@ -196,5 +198,58 @@ test("ClubKonnect requery mode keeps lookup errors PENDING instead of falsely re
   assert.equal(cancelled.resolution, "FAILED");
   assert.match(cancelled.reason, /ORDER_CANCELLED/);
 });
+
+test("Service pricing rules accurately compute Data markup (% + flat) and exact net profit", () => {
+  const rule = sanitizeServicePricingRule("DATA", {
+    markupPercent: 5.0,
+    markupFlatKobo: 1500, // +₦15
+    customerDiscountPercent: 0,
+    feeKobo: 0,
+  });
+  const res = computePlanPricingWithRule({
+    serviceType: "DATA",
+    productCode: "1000.0",
+    providerCostKobo: 25000, // ₦250 ClubKonnect wholesale
+    commissionPercent: 0,
+    rule,
+  });
+  // 25000 * 1.05 = 26250 + 1500 = 27750 -> ceil to ₦1 = 27800 (₦278)
+  assert.equal(res.sellingPriceKobo, 27800);
+  assert.equal(res.netProfitKobo, 2800); // ₦28.00 net profit
+  assert.equal(res.profitMarginPercent, 11.2);
+});
+
+test("Service pricing rules compute Airtime spread & Electricity convenience fee profit per ₦1,000", () => {
+  const airtimeRule = sanitizeServicePricingRule("AIRTIME", {
+    customerDiscountPercent: 1.0,
+    feeKobo: 0,
+  });
+  const airtime = computePlanPricingWithRule({
+    serviceType: "AIRTIME",
+    productCode: "airtime",
+    providerCostKobo: 0,
+    commissionPercent: 3.0, // ClubKonnect gives 3% discount
+    rule: airtimeRule,
+  });
+  // Customer pays ₦990, ClubKonnect costs ₦970 -> ₦20 net profit (2.0%)
+  assert.equal(airtime.discountPercent, 1.0);
+  assert.equal(airtime.netProfitKobo, 2000);
+  assert.equal(airtime.profitMarginPercent, 2.0);
+
+  const elecRule = sanitizeServicePricingRule("ELECTRICITY", {
+    customerDiscountPercent: 0,
+    feeKobo: 10000, // ₦100 fee
+  });
+  const elec = computePlanPricingWithRule({
+    serviceType: "ELECTRICITY",
+    productCode: "prepaid",
+    providerCostKobo: 0,
+    commissionPercent: 1.0, // ₦10 per ₦1,000
+    rule: elecRule,
+  });
+  assert.equal(elec.feeKobo, 10000);
+  assert.equal(elec.netProfitKobo, 11000); // ₦100 fee + ₦10 commission = ₦110 per ₦1,000
+});
+
 
 

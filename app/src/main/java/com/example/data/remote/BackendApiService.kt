@@ -138,6 +138,9 @@ data class LiveCatalogPlanDto(
     val feeKobo: Long = 0L,
     val discountPercent: Double = 0.0,
     val commissionPercent: Double = 0.0,
+    val netProfitKobo: Long = 0L,
+    val profitMarginPercent: Double = 0.0,
+    val hasCustomOverride: Boolean = false,
     val available: Boolean = true
 )
 
@@ -198,6 +201,198 @@ data class CatalogSyncResponse(
     val discoveredProducts: Int = 0,
     val updatedCatalogItems: Int = 0,
     val message: String
+)
+
+@JsonClass(generateAdapter = true)
+data class NigerianBankDto(
+    val code: String = "",
+    val name: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class NigerianBanksResponse(
+    val status: String = "success",
+    val count: Int = 0,
+    val banks: List<NigerianBankDto> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class ResolveBankAccountRequest(
+    val bankCode: String,
+    val accountNumber: String
+)
+
+@JsonClass(generateAdapter = true)
+data class ResolveBankAccountResponse(
+    val status: String = "success",
+    val accountNumber: String = "",
+    val accountName: String = "",
+    val message: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class ClubKonnectFundingAccountDto(
+    val bankCode: String = "",
+    val bankName: String = "",
+    val accountNumber: String = "",
+    val accountName: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class TreasuryTransferDto(
+    val id: String = "",
+    val reference: String = "",
+    val direction: String = "FLUTTERWAVE_TO_CLUBKONNECT",
+    val flutterwaveTransferId: Long = 0L,
+    val status: String = "PENDING",
+    val amountKobo: Long = 0L,
+    val feeKobo: Long = 0L,
+    val bankCode: String = "",
+    val bankName: String = "",
+    val accountNumber: String = "",
+    val accountName: String = "",
+    val narration: String = "",
+    val completeMessage: String = "",
+    val createdAtIso: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class TreasuryConfigResponse(
+    val status: String = "success",
+    val clubKonnectFundingAccount: ClubKonnectFundingAccountDto? = null,
+    val recentTransfers: List<TreasuryTransferDto> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class SaveTreasuryConfigResponse(
+    val status: String = "success",
+    val clubKonnectFundingAccount: ClubKonnectFundingAccountDto? = null,
+    val message: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class LiveFlutterwaveTransferRequest(
+    val amountKobo: Long,
+    val bankCode: String,
+    val bankName: String,
+    val accountNumber: String,
+    val accountName: String,
+    val narration: String,
+    val idempotencyKey: String
+)
+
+@JsonClass(generateAdapter = true)
+data class LiveTransferActionResponse(
+    val status: String = "success",
+    val transfer: TreasuryTransferDto? = null,
+    val message: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class ServicePricingRuleDto(
+    val serviceType: String = "",
+    val markupPercent: Double = 0.0,
+    val markupFlatKobo: Long = 0L,
+    val customerDiscountPercent: Double = 0.0,
+    val feeKobo: Long = 0L
+)
+
+@JsonClass(generateAdapter = true)
+data class AdminPricingMatrixResponse(
+    val status: String = "success",
+    val fetchedAt: String = "",
+    val clubKonnectConnected: Boolean = false,
+    val totalPlans: Int = 0,
+    val rules: List<ServicePricingRuleDto> = emptyList(),
+    val catalog: LiveStorefrontCatalogResponse = LiveStorefrontCatalogResponse(),
+    val message: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class SavePricingRulesRequest(
+    val rules: List<ServicePricingRuleDto>
+)
+
+@JsonClass(generateAdapter = true)
+data class SavePlanOverrideRequest(
+    val serviceType: String,
+    val providerCode: String,
+    val providerName: String,
+    val productCode: String,
+    val productName: String,
+    val validity: String = "",
+    val dataVolume: String = "",
+    val providerCostKobo: Long,
+    val sellingPriceKobo: Long,
+    val feeKobo: Long,
+    val discountPercent: Double,
+    val commissionPercent: Double,
+    val enabled: Boolean = true,
+    val clearOverride: Boolean = false
+)
+
+@JsonClass(generateAdapter = true)
+data class SimpleStatusResponse(
+    val status: String = "success",
+    val message: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class BatchReconcileResponse(
+    val status: String = "success",
+    val processedCount: Int = 0,
+    val settledCount: Int = 0,
+    val reversedCount: Int = 0,
+    val stillPendingCount: Int = 0,
+    val errorCount: Int = 0,
+    val message: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class ServiceRevenueBreakdownDto(
+    val serviceType: String = "",
+    val label: String = "",
+    val txCount: Int = 0,
+    val volumeKobo: Long = 0L,
+    val profitKobo: Long = 0L
+)
+
+@JsonClass(generateAdapter = true)
+data class AdminOverviewMetricsResponse(
+    val status: String = "success",
+    val generatedAt: String = "",
+    val totalUsers: Int = 0,
+    val individualUsers: Int = 0,
+    val businessUsers: Int = 0,
+    val activeUsers: Int = 0,
+    val restrictedUsers: Int = 0,
+    val virtualAccountUsers: Int = 0,
+    val totalWalletLiabilitiesKobo: Long = 0L,
+    val clubKonnectBalanceKobo: Long = 0L,
+    val clubKonnectReachable: Boolean = false,
+    val flutterwaveAvailableKobo: Long = 0L,
+    val flutterwaveLedgerKobo: Long = 0L,
+    val flutterwaveReachable: Boolean = false,
+    val totalProviderFloatKobo: Long = 0L,
+    val floatCoveragePercent: Double = 100.0,
+    val lowClubKonnectFloatWarning: Boolean = false,
+    val solvencyAlert: Boolean = false,
+    val allTimeVolumeKobo: Long = 0L,
+    val allTimeProfitKobo: Long = 0L,
+    val allTimeTxCount: Int = 0,
+    val todayVolumeKobo: Long = 0L,
+    val todayProfitKobo: Long = 0L,
+    val todayTxCount: Int = 0,
+    val last7dVolumeKobo: Long = 0L,
+    val last7dProfitKobo: Long = 0L,
+    val last7dTxCount: Int = 0,
+    val successfulCount: Int = 0,
+    val pendingCount: Int = 0,
+    val failedCount: Int = 0,
+    val reversedCount: Int = 0,
+    val successRatePercent: Double = 100.0,
+    val openTicketsCount: Int = 0,
+    val serviceBreakdown: List<ServiceRevenueBreakdownDto> = emptyList()
 )
 
 interface BackendApiService {
@@ -304,6 +499,68 @@ interface BackendApiService {
     suspend fun adminSyncClubKonnectCatalog(
         @Header("Authorization") bearerToken: String
     ): Response<CatalogSyncResponse>
+
+    @GET("api/v1/admin/banks")
+    suspend fun adminListNigerianBanks(
+        @Header("Authorization") bearerToken: String
+    ): Response<NigerianBanksResponse>
+
+    @POST("api/v1/admin/transfers/resolve-account")
+    suspend fun adminResolveBankAccount(
+        @Header("Authorization") bearerToken: String,
+        @Body request: ResolveBankAccountRequest
+    ): Response<ResolveBankAccountResponse>
+
+    @GET("api/v1/admin/treasury/config")
+    suspend fun adminGetTreasuryConfig(
+        @Header("Authorization") bearerToken: String
+    ): Response<TreasuryConfigResponse>
+
+    @POST("api/v1/admin/treasury/config")
+    suspend fun adminSaveTreasuryConfig(
+        @Header("Authorization") bearerToken: String,
+        @Body request: ClubKonnectFundingAccountDto
+    ): Response<SaveTreasuryConfigResponse>
+
+    @POST("api/v1/admin/transfers/flutterwave-to-clubkonnect")
+    suspend fun adminInitiateFlutterwaveToClubKonnectTransfer(
+        @Header("Authorization") bearerToken: String,
+        @Body request: LiveFlutterwaveTransferRequest
+    ): Response<LiveTransferActionResponse>
+
+    @GET("api/v1/admin/transfers/{transferId}/status")
+    suspend fun adminCheckTransferStatus(
+        @Header("Authorization") bearerToken: String,
+        @Path("transferId") transferId: String
+    ): Response<LiveTransferActionResponse>
+
+    @GET("api/v1/admin/pricing/matrix")
+    suspend fun adminGetPricingMatrix(
+        @Header("Authorization") bearerToken: String,
+        @Query("refresh") refresh: Boolean = false
+    ): Response<AdminPricingMatrixResponse>
+
+    @POST("api/v1/admin/pricing/rules")
+    suspend fun adminSavePricingRules(
+        @Header("Authorization") bearerToken: String,
+        @Body request: SavePricingRulesRequest
+    ): Response<AdminPricingMatrixResponse>
+
+    @POST("api/v1/admin/pricing/override")
+    suspend fun adminSavePlanOverride(
+        @Header("Authorization") bearerToken: String,
+        @Body request: SavePlanOverrideRequest
+    ): Response<SimpleStatusResponse>
+
+    @POST("api/v1/admin/transactions/reconcile-all-pending")
+    suspend fun adminReconcileAllPending(
+        @Header("Authorization") bearerToken: String
+    ): Response<BatchReconcileResponse>
+
+    @GET("api/v1/admin/overview-metrics")
+    suspend fun adminGetOverviewMetrics(
+        @Header("Authorization") bearerToken: String
+    ): Response<AdminOverviewMetricsResponse>
 }
 
 class TrustedBackendClient(
@@ -445,6 +702,39 @@ class TrustedBackendClient(
 
     suspend fun adminSyncClubKonnectCatalog(): Result<CatalogSyncResponse> =
         executeCall { it.adminSyncClubKonnectCatalog(requireBearerToken()) }
+
+    suspend fun adminListNigerianBanks(): Result<NigerianBanksResponse> =
+        executeCall { it.adminListNigerianBanks(requireBearerToken()) }
+
+    suspend fun adminResolveBankAccount(bankCode: String, accountNumber: String): Result<ResolveBankAccountResponse> =
+        executeCall { it.adminResolveBankAccount(requireBearerToken(), ResolveBankAccountRequest(bankCode, accountNumber)) }
+
+    suspend fun adminGetTreasuryConfig(): Result<TreasuryConfigResponse> =
+        executeCall { it.adminGetTreasuryConfig(requireBearerToken()) }
+
+    suspend fun adminSaveTreasuryConfig(account: ClubKonnectFundingAccountDto): Result<SaveTreasuryConfigResponse> =
+        executeCall { it.adminSaveTreasuryConfig(requireBearerToken(), account) }
+
+    suspend fun adminInitiateFlutterwaveToClubKonnectTransfer(request: LiveFlutterwaveTransferRequest): Result<LiveTransferActionResponse> =
+        executeCall { it.adminInitiateFlutterwaveToClubKonnectTransfer(requireBearerToken(), request) }
+
+    suspend fun adminCheckTransferStatus(transferId: String): Result<LiveTransferActionResponse> =
+        executeCall { it.adminCheckTransferStatus(requireBearerToken(), transferId) }
+
+    suspend fun adminGetPricingMatrix(refresh: Boolean = false): Result<AdminPricingMatrixResponse> =
+        executeCall { it.adminGetPricingMatrix(requireBearerToken(), refresh) }
+
+    suspend fun adminSavePricingRules(rules: List<ServicePricingRuleDto>): Result<AdminPricingMatrixResponse> =
+        executeCall { it.adminSavePricingRules(requireBearerToken(), SavePricingRulesRequest(rules)) }
+
+    suspend fun adminSavePlanOverride(request: SavePlanOverrideRequest): Result<SimpleStatusResponse> =
+        executeCall { it.adminSavePlanOverride(requireBearerToken(), request) }
+
+    suspend fun adminReconcileAllPending(): Result<BatchReconcileResponse> =
+        executeCall { it.adminReconcileAllPending(requireBearerToken()) }
+
+    suspend fun adminGetOverviewMetrics(): Result<AdminOverviewMetricsResponse> =
+        executeCall { it.adminGetOverviewMetrics(requireBearerToken()) }
 
     private suspend fun <T> executeCall(block: suspend (BackendApiService) -> Response<T>): Result<T> {
         return try {

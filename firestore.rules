@@ -85,7 +85,7 @@ service cloud.firestore {
     }
 
     function isValidServiceCatalog(data) {
-      return data.serviceType in ['AIRTIME', 'DATA', 'ELECTRICITY', 'CABLE_TV', 'RECHARGE_CARD', 'WAEC_PIN', 'JAMB_PIN'] &&
+      return data.serviceType in ['AIRTIME', 'DATA', 'ELECTRICITY', 'CABLE_TV', 'RECHARGE_CARD', 'DATA_CARD', 'WAEC_PIN', 'JAMB_PIN', 'SMILE', 'SPECTRANET', 'BETTING'] &&
              data.providerCode is string && data.providerCode.size() >= 1 && data.providerCode.size() <= 60 &&
              data.providerName is string && data.providerName.size() >= 2 && data.providerName.size() <= 80 &&
              data.productCode is string && data.productCode.size() >= 1 && data.productCode.size() <= 80 &&
@@ -410,6 +410,13 @@ service cloud.firestore {
     match /admins/{adminUid} {
       allow get: if isSignedIn() && isValidId(adminUid) && request.auth.uid == adminUid;
       allow list, create, update, delete: if false;
+    }
+
+    // --- 10. TREASURY TRANSFERS (Admin Read-Only, Backend Write-Only) ---
+    match /treasuryTransfers/{transferId} {
+      allow get: if isAdmin() && isValidId(transferId);
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
     }
   }
 }

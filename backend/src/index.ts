@@ -7,6 +7,7 @@ import { FlutterwaveClient } from "./flutterwaveClient";
 import { atomicCreditWallet, atomicReserveAndCreatePurchase, atomicReverseConfirmedFailure } from "./ledgerEngine";
 import { classifyClubKonnectStatus, computeAuthorizedPurchasePricing } from "./pricingEngine";
 import { findAuthorizedLiveProduct, getLiveStorefrontCatalog, invalidateLiveCatalogCache } from "./liveCatalogEngine";
+import { registerAdminTreasuryAndPricingRoutes } from "./adminRoutes";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -1526,6 +1527,15 @@ app.post("/api/v1/admin/catalog/sync-clubkonnect", requireAuth, requireAdmin, as
   } catch (err) {
     res.status(400).json({ status: "error", message: (err as Error).message });
   }
+});
+
+// Mount Super Admin Live Treasury Transfers, Pricing/Margin Rules Matrix, Batch Reconcile & Executive Overview Routes
+registerAdminTreasuryAndPricingRoutes(app, {
+  requireAuth,
+  requireAdmin,
+  clubKonnect,
+  flutterwave,
+  reconcileTransactionWithClubKonnect,
 });
 
 const port = Number(process.env.PORT || 8080);

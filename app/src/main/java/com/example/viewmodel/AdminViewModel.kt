@@ -12,7 +12,15 @@ import com.example.data.model.SupportTicket
 import com.example.data.model.TicketStatus
 import com.example.data.model.TransactionRecord
 import com.example.data.model.UserProfile
+import com.example.data.remote.AdminOverviewMetricsResponse
+import com.example.data.remote.AdminPricingMatrixResponse
+import com.example.data.remote.ClubKonnectFundingAccountDto
+import com.example.data.remote.LiveFlutterwaveTransferRequest
+import com.example.data.remote.NigerianBankDto
 import com.example.data.remote.ProviderHealthResponse
+import com.example.data.remote.SavePlanOverrideRequest
+import com.example.data.remote.ServicePricingRuleDto
+import com.example.data.remote.TreasuryTransferDto
 import com.example.data.remote.TrustedBackendClient
 import com.example.data.repository.FintechRepository
 import kotlinx.coroutines.CancellationException
@@ -40,6 +48,27 @@ class AdminViewModel(
 
     private val _providerHealth = MutableStateFlow<ProviderHealthResponse?>(null)
     val providerHealth: StateFlow<ProviderHealthResponse?> = _providerHealth.asStateFlow()
+
+    private val _overviewMetrics = MutableStateFlow<AdminOverviewMetricsResponse?>(null)
+    val overviewMetrics: StateFlow<AdminOverviewMetricsResponse?> = _overviewMetrics.asStateFlow()
+
+    private val _pricingMatrix = MutableStateFlow<AdminPricingMatrixResponse?>(null)
+    val pricingMatrix: StateFlow<AdminPricingMatrixResponse?> = _pricingMatrix.asStateFlow()
+
+    private val _isLoadingPricing = MutableStateFlow(false)
+    val isLoadingPricing: StateFlow<Boolean> = _isLoadingPricing.asStateFlow()
+
+    private val _nigerianBanks = MutableStateFlow<List<NigerianBankDto>>(emptyList())
+    val nigerianBanks: StateFlow<List<NigerianBankDto>> = _nigerianBanks.asStateFlow()
+
+    private val _resolvedAccountName = MutableStateFlow<String?>(null)
+    val resolvedAccountName: StateFlow<String?> = _resolvedAccountName.asStateFlow()
+
+    private val _treasuryConfig = MutableStateFlow<ClubKonnectFundingAccountDto?>(null)
+    val treasuryConfig: StateFlow<ClubKonnectFundingAccountDto?> = _treasuryConfig.asStateFlow()
+
+    private val _treasuryTransfers = MutableStateFlow<List<TreasuryTransferDto>>(emptyList())
+    val treasuryTransfers: StateFlow<List<TreasuryTransferDto>> = _treasuryTransfers.asStateFlow()
 
     private val _activeBackendUrl = MutableStateFlow(backendClient.activeBaseUrl)
     val activeBackendUrl: StateFlow<String> = _activeBackendUrl.asStateFlow()
@@ -347,6 +376,201 @@ class AdminViewModel(
                 _statusBanner.value = ActionBanner("Notification dispatched.")
             }.onFailure { err ->
                 _statusBanner.value = ActionBanner(err.message ?: "Failed to send notification", isError = true)
+            }
+        }
+    }
+
+    fun loadOverviewMetrics(silent: Boolean = false) {
+        viewModelScope.launch {
+            if (!silent) _isBusy.value = true
+            val result = backendClient.adminGetOverviewMetrics()
+            if (!silent) _isBusy.value = false
+            result.onSuccess { metrics ->
+                _overviewMetrics.value = metrics
+                if (!silent) {
+                    _statusBanner.value = ActionBanner("Live executive overview & provider float refreshed.")
+                }
+            }.onFailure { err ->
+                if (!silent) {
+                    _statusBanner.value = ActionBanner(err.message ?: "Unable to fetch live overview metrics", isError = true)
+                }
+            }
+        }
+    }
+
+    fun reconcileAllPendingTransactions() {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = backendClient.adminReconcileAllPending()
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _statusBanner.value = ActionBanner(resp.message)
+                loadOverviewMetrics(silent = true)
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Batch reconciliation failed", isError = true)
+            }
+        }
+    }
+
+    fun loadPricingMatrix(refresh: Boolean = false, silent: Boolean = false) {
+        viewModelScope.launch {
+            _isLoadingPricing.value = true
+            val result = backendClient.adminGetPricingMatrix(refresh)
+            _isLoadingPricing.value = false
+            result.onSuccess { matrix ->
+                _pricingMatrix.value = matrix
+                if (!silent && refresh) {
+                    _statusBanner.value = ActionBanner("Fetched ${matrix.totalPlans} live ClubKonnect plans & wholesale rates.")
+                }
+            }.onFailure { err ->
+                if (!silent) {
+                    _statusBanner.value = ActionBanner(err.message ?: "Unable to fetch live ClubKonnect pricing matrix", isError = true)
+                }
+            }
+        }
+    }
+
+    fun savePricingRules(rules: List<ServicePricingRuleDto>) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = backendClient.adminSavePricingRules(rules)
+            _isBusy.value = false
+            result.onSuccess { updated ->
+                _pricingMatrix.value = updated
+                _statusBanner.value = ActionBanner(updated.message ?: "Pricing rules saved & live prices recalculated.")
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Failed to save pricing rules", isError = true)
+            }
+        }
+    }
+
+    fun savePlanOverride(request: SavePlanOverrideRequest) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = backendClient.adminSavePlanOverride(request)
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _statusBanner.value = ActionBanner(resp.message)
+                loadPricingMatrix(refresh = true, silent = true)
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Failed to save plan override", isError = true)
+            }
+        }
+    }
+
+    fun loadTreasuryWorkspace(silent: Boolean = true) {
+        viewModelScope.launch {
+            if (!silent) _isBusy.value = true
+            backendClient.getProviderHealth().onSuccess { _providerHealth.value = it }
+            backendClient.adminGetTreasuryConfig().onSuccess { cfg ->
+                _treasuryConfig.value = cfg.clubKonnectFundingAccount
+                _treasuryTransfers.value = cfg.recentTransfers
+            }
+            if (_nigerianBanks.value.isEmpty()) {
+                backendClient.adminListNigerianBanks().onSuccess { resp ->
+                    _nigerianBanks.value = resp.banks
+                }
+            }
+            if (!silent) _isBusy.value = false
+        }
+    }
+
+    fun clearResolvedAccount() {
+        _resolvedAccountName.value = null
+    }
+
+    fun resolveBankAccount(bankCode: String, accountNumber: String) {
+        val cleanAcct = accountNumber.filter { it.isDigit() }
+        if (bankCode.isBlank() || cleanAcct.length != 10) {
+            _statusBanner.value = ActionBanner("Select a bank and enter a 10-digit account number first.", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = backendClient.adminResolveBankAccount(bankCode, cleanAcct)
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _resolvedAccountName.value = resp.accountName
+                _statusBanner.value = ActionBanner("Verified: ${resp.accountName}")
+            }.onFailure { err ->
+                _resolvedAccountName.value = null
+                _statusBanner.value = ActionBanner(err.message ?: "Unable to verify bank account", isError = true)
+            }
+        }
+    }
+
+    fun saveClubKonnectFundingAccount(
+        bankCode: String,
+        bankName: String,
+        accountNumber: String,
+        accountName: String
+    ) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = backendClient.adminSaveTreasuryConfig(
+                ClubKonnectFundingAccountDto(
+                    bankCode = bankCode,
+                    bankName = bankName,
+                    accountNumber = accountNumber.filter { it.isDigit() },
+                    accountName = accountName.trim()
+                )
+            )
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _treasuryConfig.value = resp.clubKonnectFundingAccount
+                _statusBanner.value = ActionBanner(resp.message)
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Failed to save ClubKonnect funding account", isError = true)
+            }
+        }
+    }
+
+    fun initiateLiveFlutterwaveToClubKonnectTransfer(
+        amountKobo: Long,
+        bankCode: String,
+        bankName: String,
+        accountNumber: String,
+        accountName: String,
+        narration: String
+    ) {
+        if (amountKobo < 10000L) {
+            _statusBanner.value = ActionBanner("Minimum live transfer is ₦100.00.", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            val request = LiveFlutterwaveTransferRequest(
+                amountKobo = amountKobo,
+                bankCode = bankCode,
+                bankName = bankName,
+                accountNumber = accountNumber.filter { it.isDigit() },
+                accountName = accountName.trim(),
+                narration = narration.trim().ifBlank { "M-Sageer Pay ClubKonnect Float Top-Up" },
+                idempotencyKey = "flw2ck_${UUID.randomUUID()}"
+            )
+            val result = backendClient.adminInitiateFlutterwaveToClubKonnectTransfer(request)
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _statusBanner.value = ActionBanner(resp.message)
+                loadTreasuryWorkspace(silent = true)
+                loadOverviewMetrics(silent = true)
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Live Flutterwave transfer failed", isError = true)
+            }
+        }
+    }
+
+    fun checkLiveTransferStatus(transferId: Long) {
+        if (transferId <= 0L) return
+        viewModelScope.launch {
+            _isBusy.value = true
+            val result = backendClient.adminCheckTransferStatus(transferId.toString())
+            _isBusy.value = false
+            result.onSuccess { resp ->
+                _statusBanner.value = ActionBanner(resp.message)
+                loadTreasuryWorkspace(silent = true)
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Unable to query transfer status", isError = true)
             }
         }
     }

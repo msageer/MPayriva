@@ -17,19 +17,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Storefront
-import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -60,23 +56,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.core.CurrencyFormatter
 import com.example.data.model.AccountStatus
-import com.example.data.model.AccountType
-import com.example.data.model.ServiceCatalogItem
-import com.example.data.model.ServiceType
 import com.example.data.model.SupportTicket
 import com.example.data.model.TicketStatus
 import com.example.data.model.TransactionStatus
 import com.example.data.model.UserProfile
 import com.example.ui.components.InlineStatusBanner
 import com.example.ui.theme.JetBrainsMono
-import com.example.ui.theme.StatusFailed
-import com.example.ui.theme.StatusPending
-import com.example.ui.theme.StatusSuccess
 import com.example.viewmodel.AdminViewModel
 import com.example.viewmodel.UiState
 
@@ -96,28 +85,32 @@ fun AdminDashboardScreen(
 
     val usersState by adminViewModel.allUsersState.collectAsStateWithLifecycle()
     val txState by adminViewModel.allTransactionsState.collectAsStateWithLifecycle()
-    val catalogState by adminViewModel.allCatalogState.collectAsStateWithLifecycle()
     val ticketsState by adminViewModel.allTicketsState.collectAsStateWithLifecycle()
     val logsState by adminViewModel.providerLogsState.collectAsStateWithLifecycle()
     val banner by adminViewModel.statusBanner.collectAsStateWithLifecycle()
     val isBusy by adminViewModel.isBusy.collectAsStateWithLifecycle()
     val providerHealth by adminViewModel.providerHealth.collectAsStateWithLifecycle()
+    val overviewMetrics by adminViewModel.overviewMetrics.collectAsStateWithLifecycle()
+    val pricingMatrix by adminViewModel.pricingMatrix.collectAsStateWithLifecycle()
+    val isLoadingPricing by adminViewModel.isLoadingPricing.collectAsStateWithLifecycle()
+    val nigerianBanks by adminViewModel.nigerianBanks.collectAsStateWithLifecycle()
+    val resolvedAccountName by adminViewModel.resolvedAccountName.collectAsStateWithLifecycle()
+    val treasuryConfig by adminViewModel.treasuryConfig.collectAsStateWithLifecycle()
+    val treasuryTransfers by adminViewModel.treasuryTransfers.collectAsStateWithLifecycle()
     val platformConfig by adminViewModel.platformConfig.collectAsStateWithLifecycle()
     val activeBackendUrl by adminViewModel.activeBackendUrl.collectAsStateWithLifecycle()
 
     val users = (usersState as? UiState.Success)?.data.orEmpty()
     val transactions = (txState as? UiState.Success)?.data.orEmpty()
-    val catalog = (catalogState as? UiState.Success)?.data.orEmpty()
     val tickets = (ticketsState as? UiState.Success)?.data.orEmpty()
     val logs = (logsState as? UiState.Success)?.data.orEmpty()
 
     var activeTab by remember { mutableIntStateOf(0) }
-    var editingCatalogItem by remember { mutableStateOf<ServiceCatalogItem?>(null) }
     var managingUser by remember { mutableStateOf<UserProfile?>(null) }
     var replyingTicket by remember { mutableStateOf<SupportTicket?>(null) }
     var notifyingUser by remember { mutableStateOf<UserProfile?>(null) }
 
-    val tabs = listOf("Overview", "Customers", "Pricing", "API & Providers", "Support")
+    val tabs = listOf("Overview", "Treasury", "Pricing", "Customers", "API & Logs", "Support")
 
     Scaffold(
         topBar = {
@@ -189,66 +182,56 @@ fun AdminDashboardScreen(
                         selected = activeTab == index,
                         onClick = { activeTab = index },
                         text = { Text(title) },
-                        modifier = Modifier.testTag("admin_tab_${title.lowercase()}")
+                        modifier = Modifier.testTag("admin_tab_${title.lowercase().replace(" ", "_")}")
                     )
                 }
             }
 
             when (activeTab) {
-                0 -> {
-                    // OVERVIEW KPIs
-                    val individualCount = users.count { it.resolvedAccountType() == AccountType.INDIVIDUAL }
-                    val businessCount = users.count { it.resolvedAccountType() == AccountType.BUSINESS }
-                    val totalWalletLiability = users.sumOf { it.walletBalanceKobo }
-                    val totalVolume = transactions.sumOf { it.totalAmountKobo }
-                    val successCount = transactions.count { it.resolvedStatus() == TransactionStatus.SUCCESSFUL }
-                    val pendingCount = transactions.count { it.resolvedStatus() == TransactionStatus.PENDING || it.resolvedStatus() == TransactionStatus.PROCESSING }
-                    val failedCount = transactions.count { it.resolvedStatus() == TransactionStatus.FAILED }
-                    val grossMargin = transactions
-                        .filter { it.resolvedStatus() == TransactionStatus.SUCCESSFUL }
-                        .sumOf { it.grossMarginKobo }
+                0 -> AdminOverviewTab(
+                    metrics = overviewMetrics,
+                    users = users,
+                    transactions = transactions,
+                    tickets = tickets,
+                    isBusy = isBusy,
+                    onRefreshMetrics = { adminViewModel.loadOverviewMetrics(silent = false) },
+                    onReconcileAllPending = adminViewModel::reconcileAllPendingTransactions,
+                    onSyncPastDeposits = adminViewModel::syncAllPastFlutterwaveDeposits,
+                    onOpenTreasuryTab = { activeTab = 1 },
+                    onOpenPricingTab = { activeTab = 2 }
+                )
 
-                    LazyColumn(
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        item {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                                KpiCard("Total Users", users.size.toString(), "$individualCount Ind • $businessCount Biz", Modifier.weight(1f))
-                                KpiCard("Wallet Liabilities", CurrencyFormatter.formatKobo(totalWalletLiability), "All NGN Wallets", Modifier.weight(1f))
-                            }
-                        }
-                        item {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                                KpiCard("Total Volume", CurrencyFormatter.formatKobo(totalVolume), "${transactions.size} Txns", Modifier.weight(1f))
-                                KpiCard("Gross Margin", CurrencyFormatter.formatKobo(grossMargin), "Settled Profit", Modifier.weight(1f))
-                            }
-                        }
-                        item {
-                            Card(
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Text("Transaction Health Breakdown", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text("Successful: $successCount", color = StatusSuccess, fontWeight = FontWeight.Bold)
-                                        Text("Pending: $pendingCount", color = StatusPending, fontWeight = FontWeight.Bold)
-                                        Text("Failed: $failedCount", color = StatusFailed, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                1 -> AdminTreasuryTab(
+                    providerHealth = providerHealth,
+                    nigerianBanks = nigerianBanks,
+                    resolvedAccountName = resolvedAccountName,
+                    savedFundingAccount = treasuryConfig,
+                    recentTransfers = treasuryTransfers,
+                    isBusy = isBusy,
+                    onLoadTreasuryWorkspace = { adminViewModel.loadTreasuryWorkspace(silent = false) },
+                    onResolveBankAccount = adminViewModel::resolveBankAccount,
+                    onClearResolvedAccount = adminViewModel::clearResolvedAccount,
+                    onSaveClubKonnectAccount = adminViewModel::saveClubKonnectFundingAccount,
+                    onSendLiveFlutterwaveToClubKonnect = adminViewModel::initiateLiveFlutterwaveToClubKonnectTransfer,
+                    onCheckTransferStatus = adminViewModel::checkLiveTransferStatus,
+                    onFundAdminFromMain = adminViewModel::fundAdminWalletFromMainBalance,
+                    onFundAdminFromClubKonnect = adminViewModel::fundAdminWalletFromClubKonnect,
+                    onRecordClubKonnectToMainSweep = adminViewModel::transferClubKonnectToMainAccount,
+                    onSyncPastDeposits = adminViewModel::syncAllPastFlutterwaveDeposits
+                )
 
-                1 -> {
+                2 -> AdminPricingTab(
+                    pricingMatrix = pricingMatrix,
+                    isLoadingPricing = isLoadingPricing,
+                    platformConfig = platformConfig,
+                    isBusy = isBusy,
+                    onLoadPricingMatrix = { refresh -> adminViewModel.loadPricingMatrix(refresh = refresh) },
+                    onSavePricingRules = adminViewModel::savePricingRules,
+                    onSavePlanOverride = adminViewModel::savePlanOverride,
+                    onToggleUtilityService = adminViewModel::toggleUtilityService
+                )
+
+                3 -> {
                     // CUSTOMERS
                     LazyColumn(
                         contentPadding = PaddingValues(16.dp),
@@ -270,7 +253,10 @@ fun AdminDashboardScreen(
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(user.displayTitle(), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                             Text("${user.email} • ${user.phoneNumber}", style = MaterialTheme.typography.bodySmall)
-                                            Text("${user.accountType} • Balance: ${CurrencyFormatter.formatKobo(user.walletBalanceKobo)}", style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono))
+                                            Text(
+                                                "${user.accountType} • Balance: ${CurrencyFormatter.formatKobo(user.walletBalanceKobo)}",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono)
+                                            )
                                         }
                                         Row {
                                             IconButton(onClick = { notifyingUser = user }) {
@@ -297,135 +283,8 @@ fun AdminDashboardScreen(
                     }
                 }
 
-                2 -> {
-                    // CENTRAL PRICING, SERVICE TOGGLES & CATALOG
-                    val toggleableServices = listOf(
-                        Triple("Airtime Top-Up", listOf(ServiceType.AIRTIME.name), platformConfig.isServiceEnabled(ServiceType.AIRTIME)),
-                        Triple("Mobile Data Bundles", listOf(ServiceType.DATA.name), platformConfig.isServiceEnabled(ServiceType.DATA)),
-                        Triple("Recharge Card Printing (e-PIN)", listOf(ServiceType.RECHARGE_CARD.name), platformConfig.isServiceEnabled(ServiceType.RECHARGE_CARD)),
-                        Triple("Data Card Printing (e-PIN)", listOf(ServiceType.DATA_CARD.name), platformConfig.isServiceEnabled(ServiceType.DATA_CARD)),
-                        Triple("Electricity Bills", listOf(ServiceType.ELECTRICITY.name), platformConfig.isServiceEnabled(ServiceType.ELECTRICITY)),
-                        Triple("Cable TV Subscriptions", listOf(ServiceType.CABLE_TV.name), platformConfig.isServiceEnabled(ServiceType.CABLE_TV)),
-                        Triple("WAEC Result PIN", listOf(ServiceType.WAEC_PIN.name), platformConfig.isServiceEnabled(ServiceType.WAEC_PIN)),
-                        Triple("JAMB e-PIN", listOf(ServiceType.JAMB_PIN.name), platformConfig.isServiceEnabled(ServiceType.JAMB_PIN)),
-                        Triple("Broadband (Smile & Spectranet)", listOf(ServiceType.SMILE.name, ServiceType.SPECTRANET.name), platformConfig.isBroadbandEnabled()),
-                        Triple("Betting Wallet Funding", listOf(ServiceType.BETTING.name), platformConfig.isServiceEnabled(ServiceType.BETTING))
-                    )
-
-                    LazyColumn(
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        item {
-                            Card(
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Tune,
-                                            contentDescription = "Service toggles",
-                                            tint = MaterialTheme.colorScheme.secondary
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "Utility Service Controls (ON / OFF)",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    Text(
-                                        text = "Instantly show or hide any utility service on the customer storefront and block disabled purchases server-side.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    toggleableServices.forEach { (label, keys, isOn) ->
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = label,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                            Switch(
-                                                checked = isOn,
-                                                enabled = !isBusy,
-                                                onCheckedChange = { checked ->
-                                                    adminViewModel.toggleUtilityService(
-                                                        serviceKeys = keys,
-                                                        enabled = checked,
-                                                        displayLabel = label
-                                                    )
-                                                },
-                                                modifier = Modifier.testTag("toggle_service_${keys.first().lowercase()}")
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        item {
-                            Button(
-                                onClick = { adminViewModel.seedDefaultServiceCatalog() },
-                                enabled = !isBusy,
-                                shape = RoundedCornerShape(14.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
-                                    .testTag("admin_seed_catalog_button")
-                            ) {
-                                Icon(Icons.Filled.CloudSync, contentDescription = "Seed catalog", modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Bootstrap / Reset Default Nigerian Service Catalog", fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        items(catalog, key = { it.id }) { item ->
-                            Card(
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text("${item.providerName} • ${item.productName}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                                        Text(
-                                            text = "Cost: ${CurrencyFormatter.formatKobo(item.providerCostKobo)} | Sell: ${CurrencyFormatter.formatKobo(item.sellingPriceKobo)} | Fee: ${CurrencyFormatter.formatKobo(item.feeKobo)}",
-                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono)
-                                        )
-                                        Text(
-                                            text = "Margin: ${CurrencyFormatter.formatKobo(item.grossMarginKobo())} • Disc: ${item.discountPercent}% • ${if (item.enabled) "ENABLED" else "DISABLED"}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (item.enabled) StatusSuccess else StatusFailed
-                                        )
-                                    }
-                                    IconButton(onClick = { editingCatalogItem = item }) {
-                                        Icon(Icons.Filled.Edit, contentDescription = "Edit pricing")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                3 -> {
-                    // API, PROVIDERS & RECONCILIATION
+                4 -> {
+                    // API CONFIGURATION, PENDING RECONCILIATION & PROVIDER LOGS
                     var backendUrlInput by remember(platformConfig.backendBaseUrl) {
                         mutableStateOf(platformConfig.backendBaseUrl.ifBlank { activeBackendUrl })
                     }
@@ -443,7 +302,6 @@ fun AdminDashboardScreen(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // 1. Live Backend API Endpoint & Mode Configuration (Non-Secret)
                         item {
                             Card(
                                 shape = RoundedCornerShape(16.dp),
@@ -457,11 +315,7 @@ fun AdminDashboardScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(
-                                            "Trusted Backend API",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold
-                                        )
+                                        Text("Trusted Backend API", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                         Surface(
                                             color = if (urlConfigured) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.errorContainer,
                                             shape = RoundedCornerShape(50)
@@ -474,11 +328,6 @@ fun AdminDashboardScreen(
                                             )
                                         }
                                     }
-                                    Text(
-                                        text = "Point the app to your deployed Render (or Cloud Run / VPS) HTTPS URL. ClubKonnect & Flutterwave secret keys remain strictly inside backend environment variables.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
                                     OutlinedTextField(
                                         value = backendUrlInput,
                                         onValueChange = { backendUrlInput = it },
@@ -498,11 +347,7 @@ fun AdminDashboardScreen(
                                         Text("ClubKonnect Mode", style = MaterialTheme.typography.bodyMedium)
                                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                             listOf("SANDBOX", "LIVE").forEach { mode ->
-                                                FilterChip(
-                                                    selected = ckMode == mode,
-                                                    onClick = { ckMode = mode },
-                                                    label = { Text(mode) }
-                                                )
+                                                FilterChip(selected = ckMode == mode, onClick = { ckMode = mode }, label = { Text(mode) })
                                             }
                                         }
                                     }
@@ -514,11 +359,7 @@ fun AdminDashboardScreen(
                                         Text("Flutterwave Mode", style = MaterialTheme.typography.bodyMedium)
                                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                             listOf("SANDBOX", "LIVE").forEach { mode ->
-                                                FilterChip(
-                                                    selected = flwMode == mode,
-                                                    onClick = { flwMode = mode },
-                                                    label = { Text(mode) }
-                                                )
+                                                FilterChip(selected = flwMode == mode, onClick = { flwMode = mode }, label = { Text(mode) })
                                             }
                                         }
                                     }
@@ -571,7 +412,6 @@ fun AdminDashboardScreen(
                             }
                         }
 
-                        // 2. Live Provider Health & Catalog Sync
                         item {
                             Card(
                                 shape = RoundedCornerShape(16.dp),
@@ -583,15 +423,14 @@ fun AdminDashboardScreen(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(Icons.Filled.HealthAndSafety, contentDescription = "Providers", tint = MaterialTheme.colorScheme.secondary)
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("ClubKonnect & Flutterwave Health", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                        Text("Provider Connectivity & Diagnostics", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                     }
                                     Text(
                                         text = providerHealth?.let {
                                             "Env: ${it.environment}\n" +
-                                                "ClubKonnect: ${if (it.clubKonnectConfigured) "Configured" else "Missing"} (Balance: ₦${it.clubKonnectBalanceNaira ?: "N/A"})\n" +
-                                                "Flutterwave: ${if (it.flutterwaveConfigured) "Configured" else "Missing"}\n" +
-                                                "Flutterwave Main NGN — Available: ₦${it.flutterwaveAvailableBalanceNaira ?: "N/A"} | Ledger: ₦${it.flutterwaveLedgerBalanceNaira ?: "N/A"}"
-                                        } ?: "Query live ClubKonnect & Flutterwave Main NGN balances, wire past funded bank transfers to tied wallets, or sync ClubKonnect bundle costs.",
+                                                "ClubKonnect: ${if (it.clubKonnectConfigured) "Configured" else "Missing"} (₦${it.clubKonnectBalanceNaira ?: "N/A"})\n" +
+                                                "Flutterwave: ${if (it.flutterwaveConfigured) "Configured" else "Missing"} (Avail: ₦${it.flutterwaveAvailableBalanceNaira ?: "N/A"})"
+                                        } ?: "Tap Query Provider Health to verify backend connectivity.",
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     OutlinedButton(
@@ -601,23 +440,9 @@ fun AdminDashboardScreen(
                                             .fillMaxWidth()
                                             .testTag("admin_check_provider_health_button")
                                     ) {
-                                        Icon(Icons.Filled.Refresh, contentDescription = "Check health", modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Query Live Provider Balances")
-                                    }
-                                    Button(
-                                        onClick = { adminViewModel.syncAllPastFlutterwaveDeposits() },
-                                        enabled = !isBusy,
-                                        shape = RoundedCornerShape(14.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(48.dp)
-                                            .testTag("admin_sync_all_deposits_button")
-                                    ) {
-                                        Icon(Icons.Filled.CloudSync, contentDescription = "Sync past deposits", modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Sync Past Flutterwave Deposits", fontWeight = FontWeight.Bold)
+                                        Text("Query Live Provider Health")
                                     }
                                     OutlinedButton(
                                         onClick = { adminViewModel.syncLiveClubKonnectCatalog() },
@@ -626,199 +451,26 @@ fun AdminDashboardScreen(
                                             .fillMaxWidth()
                                             .testTag("admin_sync_clubkonnect_catalog_button")
                                     ) {
-                                        Icon(Icons.Filled.CloudSync, contentDescription = "Sync ClubKonnect", modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Filled.CloudSync, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Sync Live ClubKonnect Catalog Costs")
+                                        Text("Sync ClubKonnect Costs to Custom Overrides")
                                     }
                                 }
                             }
                         }
 
-                        // 2B. Super Admin: Fund Admin Wallet from Flutterwave Main NGN Account
-                        item {
-                            var mainFundNaira by remember { mutableStateOf("5000") }
-                            Card(
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            Icons.Filled.AccountBalanceWallet,
-                                            contentDescription = "Flutterwave main balance",
-                                            tint = MaterialTheme.colorScheme.secondary
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            "Super Admin Main Account Funding",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    Text(
-                                        text = "Draw from your live Flutterwave Main NGN Available Balance into your Super Admin app wallet to execute utility transactions directly. Backend verifies available NGN balance before crediting.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    if (!providerHealth?.flutterwaveAvailableBalanceNaira.isNullOrBlank()) {
-                                        Text(
-                                            text = "Live Flutterwave Main Available: ₦${providerHealth?.flutterwaveAvailableBalanceNaira}",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
-                                            color = StatusSuccess,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    OutlinedTextField(
-                                        value = mainFundNaira,
-                                        onValueChange = { mainFundNaira = it.filter { c -> c.isDigit() } },
-                                        label = { Text("Amount to Wire to Admin Wallet (₦)") },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                        singleLine = true,
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .testTag("admin_main_fund_amount_input")
-                                    )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        listOf("5000", "10000", "25000", "50000").forEach { preset ->
-                                            FilterChip(
-                                                selected = mainFundNaira == preset,
-                                                onClick = { mainFundNaira = preset },
-                                                label = { Text("₦$preset") }
-                                            )
-                                        }
-                                    }
-                                    Button(
-                                        onClick = {
-                                            val kobo = CurrencyFormatter.nairaToKobo(mainFundNaira) ?: 0L
-                                            adminViewModel.fundAdminWalletFromMainBalance(kobo)
-                                        },
-                                        enabled = !isBusy,
-                                        shape = RoundedCornerShape(14.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(48.dp)
-                                            .testTag("admin_fund_from_main_button")
-                                    ) {
-                                        Text("Wire From Main Account to Admin Wallet", fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                        }
-
-                        // 2C. Super Admin: Use Live ClubKonnect Balance & Transfer to Main Account
-                        item {
-                            var ckAmountNaira by remember { mutableStateOf("1000") }
-                            val rawCkBal = providerHealth?.clubKonnectBalanceNaira
-                            val parsedCkNaira = rawCkBal?.replace(Regex("[^0-9.]"), "")?.toDoubleOrNull()
-
-                            Card(
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            Icons.Filled.SwapHoriz,
-                                            contentDescription = "ClubKonnect balance",
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            "ClubKonnect Balance & Main Account Transfer",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    Text(
-                                        text = "Use your live ClubKonnect wallet balance directly in your Super Admin wallet for transactions, or record an audited treasury transfer into your Main Account ledger.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    if (!rawCkBal.isNullOrBlank()) {
-                                        Text(
-                                            text = "Live ClubKonnect Balance: ₦$rawCkBal",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
-                                            color = StatusSuccess,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    OutlinedTextField(
-                                        value = ckAmountNaira,
-                                        onValueChange = { ckAmountNaira = it.filter { c -> c.isDigit() || c == '.' } },
-                                        label = { Text("ClubKonnect Amount (₦)") },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                        singleLine = true,
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .testTag("admin_ck_amount_input")
-                                    )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        listOf("500", "1000", "2000").forEach { preset ->
-                                            FilterChip(
-                                                selected = ckAmountNaira == preset,
-                                                onClick = { ckAmountNaira = preset },
-                                                label = { Text("₦$preset") }
-                                            )
-                                        }
-                                        if (parsedCkNaira != null && parsedCkNaira >= 100.0) {
-                                            val fullStr = String.format("%.2f", parsedCkNaira)
-                                            FilterChip(
-                                                selected = ckAmountNaira == fullStr,
-                                                onClick = { ckAmountNaira = fullStr },
-                                                label = { Text("Use Full") }
-                                            )
-                                        }
-                                    }
-                                    Button(
-                                        onClick = {
-                                            val kobo = CurrencyFormatter.nairaToKobo(ckAmountNaira) ?: 0L
-                                            adminViewModel.fundAdminWalletFromClubKonnect(kobo)
-                                        },
-                                        enabled = !isBusy,
-                                        shape = RoundedCornerShape(14.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(48.dp)
-                                            .testTag("admin_use_ck_balance_button")
-                                    ) {
-                                        Text("Load ClubKonnect Balance to Admin Wallet", fontWeight = FontWeight.Bold)
-                                    }
-                                    OutlinedButton(
-                                        onClick = {
-                                            val kobo = CurrencyFormatter.nairaToKobo(ckAmountNaira) ?: 0L
-                                            adminViewModel.transferClubKonnectToMainAccount(kobo)
-                                        },
-                                        enabled = !isBusy,
-                                        shape = RoundedCornerShape(14.dp),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(48.dp)
-                                            .testTag("admin_transfer_ck_to_main_button")
-                                    ) {
-                                        Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Transfer ClubKonnect Balance to Main Account", fontWeight = FontWeight.SemiBold)
-                                    }
-                                }
-                            }
-                        }
-
-                        // 3. Pending Transaction Reconciliation Queue
                         if (pendingTxs.isNotEmpty()) {
                             item {
-                                Text(
-                                    "Pending Reconciliation (${pendingTxs.size})",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Pending Queue (${pendingTxs.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    TextButton(onClick = adminViewModel::reconcileAllPendingTransactions, enabled = !isBusy) {
+                                        Text("Reconcile All")
+                                    }
+                                }
                             }
                             items(pendingTxs, key = { it.reference.ifBlank { it.id } }) { tx ->
                                 Card(
@@ -827,10 +479,7 @@ fun AdminDashboardScreen(
                                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(14.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
+                                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(tx.productName.ifBlank { tx.type }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                             Text(
@@ -839,10 +488,7 @@ fun AdminDashboardScreen(
                                             )
                                             Text("Status: ${tx.status} • Recipient: ${tx.recipient}", style = MaterialTheme.typography.bodySmall)
                                         }
-                                        OutlinedButton(
-                                            onClick = { adminViewModel.reconcilePendingTransaction(tx.reference) },
-                                            enabled = !isBusy
-                                        ) {
+                                        OutlinedButton(onClick = { adminViewModel.reconcilePendingTransaction(tx.reference) }, enabled = !isBusy) {
                                             Text("Requery")
                                         }
                                     }
@@ -850,7 +496,6 @@ fun AdminDashboardScreen(
                             }
                         }
 
-                        // 4. Provider API Audit Logs
                         item {
                             Text("Provider Audit Logs (${logs.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         }
@@ -871,7 +516,7 @@ fun AdminDashboardScreen(
                     }
                 }
 
-                4 -> {
+                5 -> {
                     // SUPPORT & DISPUTES
                     LazyColumn(
                         contentPadding = PaddingValues(16.dp),
@@ -905,47 +550,6 @@ fun AdminDashboardScreen(
         }
     }
 
-    // Edit Pricing Dialog
-    editingCatalogItem?.let { item ->
-        var costText by remember(item.id) { mutableStateOf((item.providerCostKobo / 100.0).toString()) }
-        var sellText by remember(item.id) { mutableStateOf((item.sellingPriceKobo / 100.0).toString()) }
-        var feeText by remember(item.id) { mutableStateOf((item.feeKobo / 100.0).toString()) }
-        var discText by remember(item.id) { mutableStateOf(item.discountPercent.toString()) }
-        var enabled by remember(item.id) { mutableStateOf(item.enabled) }
-
-        AlertDialog(
-            onDismissRequest = { editingCatalogItem = null },
-            title = { Text("Configure ${item.productName}") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = costText, onValueChange = { costText = it }, label = { Text("Provider Cost (₦)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-                    OutlinedTextField(value = sellText, onValueChange = { sellText = it }, label = { Text("Selling Price (₦)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-                    OutlinedTextField(value = feeText, onValueChange = { feeText = it }, label = { Text("Service Fee (₦)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-                    OutlinedTextField(value = discText, onValueChange = { discText = it }, label = { Text("Discount (%)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                        Text("Service Enabled")
-                        Switch(checked = enabled, onCheckedChange = { enabled = it })
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    adminViewModel.updateServicePricing(
-                        serviceId = item.id,
-                        providerCostKobo = CurrencyFormatter.nairaToKobo(costText) ?: item.providerCostKobo,
-                        sellingPriceKobo = CurrencyFormatter.nairaToKobo(sellText) ?: item.sellingPriceKobo,
-                        feeKobo = CurrencyFormatter.nairaToKobo(feeText) ?: item.feeKobo,
-                        discountPercent = discText.toDoubleOrNull() ?: item.discountPercent,
-                        commissionPercent = item.commissionPercent,
-                        enabled = enabled
-                    )
-                    editingCatalogItem = null
-                }) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { editingCatalogItem = null }) { Text("Cancel") } }
-        )
-    }
-
     // Manage Customer Account Status Dialog
     managingUser?.let { user ->
         var chosenStatus by remember(user.userId) { mutableStateOf(user.resolvedAccountStatus()) }
@@ -957,18 +561,10 @@ fun AdminDashboardScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         AccountStatus.entries.forEach { st ->
-                            FilterChip(
-                                selected = chosenStatus == st,
-                                onClick = { chosenStatus = st },
-                                label = { Text(st.name) }
-                            )
+                            FilterChip(selected = chosenStatus == st, onClick = { chosenStatus = st }, label = { Text(st.name) })
                         }
                     }
-                    OutlinedTextField(
-                        value = reason,
-                        onValueChange = { reason = it },
-                        label = { Text("Compliance / Restriction Reason") }
-                    )
+                    OutlinedTextField(value = reason, onValueChange = { reason = it }, label = { Text("Compliance / Restriction Reason") })
                 }
             },
             confirmButton = {
@@ -1034,23 +630,5 @@ fun AdminDashboardScreen(
             },
             dismissButton = { TextButton(onClick = { notifyingUser = null }) { Text("Cancel") } }
         )
-    }
-}
-
-@Composable
-private fun KpiCard(title: String, value: String, subtitle: String, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(value, style = MaterialTheme.typography.titleLarge.copy(fontFamily = JetBrainsMono), fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
-        }
     }
 }

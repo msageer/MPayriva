@@ -41,6 +41,135 @@ export interface EpinVoucher {
   transactionDate: string;
 }
 
+export interface ServicePricingRule {
+  serviceType: SupportedServiceType;
+  markupPercent: number;
+  markupFlatKobo: number;
+  customerDiscountPercent: number;
+  feeKobo: number;
+}
+
+export type PlatformPricingRulesMap = Record<SupportedServiceType, ServicePricingRule>;
+
+export const DEFAULT_SERVICE_PRICING_RULES: PlatformPricingRulesMap = {
+  AIRTIME: { serviceType: "AIRTIME", markupPercent: 0, markupFlatKobo: 0, customerDiscountPercent: 1.0, feeKobo: 0 },
+  DATA: { serviceType: "DATA", markupPercent: 3.0, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 0 },
+  ELECTRICITY: { serviceType: "ELECTRICITY", markupPercent: 0, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 10000 },
+  CABLE_TV: { serviceType: "CABLE_TV", markupPercent: 1.5, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 0 },
+  RECHARGE_CARD: { serviceType: "RECHARGE_CARD", markupPercent: 0, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 0 },
+  DATA_CARD: { serviceType: "DATA_CARD", markupPercent: 3.0, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 0 },
+  WAEC_PIN: { serviceType: "WAEC_PIN", markupPercent: 3.0, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 0 },
+  JAMB_PIN: { serviceType: "JAMB_PIN", markupPercent: 3.0, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 0 },
+  SMILE: { serviceType: "SMILE", markupPercent: 1.5, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 0 },
+  SPECTRANET: { serviceType: "SPECTRANET", markupPercent: 1.5, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 0 },
+  BETTING: { serviceType: "BETTING", markupPercent: 0, markupFlatKobo: 0, customerDiscountPercent: 0, feeKobo: 5000 },
+};
+
+export function sanitizeServicePricingRule(
+  serviceType: SupportedServiceType,
+  raw: Partial<ServicePricingRule> | undefined
+): ServicePricingRule {
+  const def = DEFAULT_SERVICE_PRICING_RULES[serviceType];
+  const clamp = (val: unknown, min: number, max: number, fallback: number) => {
+    const n = Number(val);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  };
+  return {
+    serviceType,
+    markupPercent: Number(clamp(raw?.markupPercent, -15, 100, def.markupPercent).toFixed(2)),
+    markupFlatKobo: Math.round(clamp(raw?.markupFlatKobo, -50000, 2000000, def.markupFlatKobo)),
+    customerDiscountPercent: Number(clamp(raw?.customerDiscountPercent, 0, 25, def.customerDiscountPercent).toFixed(2)),
+    feeKobo: Math.round(clamp(raw?.feeKobo, 0, 500000, def.feeKobo)),
+  };
+}
+
+/**
+ * Applies a service-level pricing rule to a single ClubKonnect plan and calculates exact
+ * selling price, customer fee, net profit (kobo), and profit margin (%).
+ */
+export function computePlanPricingWithRule(params: {
+  serviceType: string;
+  productCode: string;
+  providerCostKobo: number;
+  commissionPercent: number;
+  rule: ServicePricingRule;
+}): {
+  sellingPriceKobo: number;
+  feeKobo: number;
+  discountPercent: number;
+  netProfitKobo: number;
+  profitMarginPercent: number;
+} {
+  const svc = params.serviceType.toUpperCase();
+  const costKobo = Math.max(0, Math.round(params.providerCostKobo));
+  const commPct = Math.max(0, Math.min(50, Number(params.commissionPercent || 0)));
+  const feeKobo = Math.max(0, Math.round(params.rule.feeKobo));
+  const discPct = Math.max(0, Math.min(25, Number(params.rule.customerDiscountPercent || 0)));
+
+  if (svc === "AIRTIME") {
+    // Variable face value: evaluate net profit on a ₦1,000 (100,000 kobo) reference purchase
+    const sampleFaceKobo = 100000;
+    const sampleCostKobo = Math.round(sampleFaceKobo * (1 - commPct / 100));
+    const sampleSellKobo = Math.round(sampleFaceKobo * (1 - discPct / 100));
+    const netProfitKobo = sampleSellKobo + feeKobo - sampleCostKobo;
+    const marginPct = Number(((netProfitKobo / sampleFaceKobo) * 100).toFixed(2));
+    return {
+      sellingPriceKobo: 0,
+      feeKobo,
+      discountPercent: discPct,
+      netProfitKobo,
+      profitMarginPercent: marginPct,
+    };
+  }
+
+  if (svc === "ELECTRICITY" || svc === "BETTING") {
+    // Variable face value: evaluate net profit on a ₦1,000 reference purchase
+    const sampleFaceKobo = 100000;
+    const sampleCostKobo = Math.round(sampleFaceKobo * (1 - commPct / 100));
+    const sampleSellKobo = Math.round(sampleFaceKobo * (1 - discPct / 100));
+    const netProfitKobo = sampleSellKobo + feeKobo - sampleCostKobo;
+    const marginPct = Number(((netProfitKobo / sampleFaceKobo) * 100).toFixed(2));
+    return {
+      sellingPriceKobo: 0,
+      feeKobo,
+      discountPercent: discPct,
+      netProfitKobo,
+      profitMarginPercent: marginPct,
+    };
+  }
+
+  if (svc === "RECHARGE_CARD") {
+    const denomNaira = Number(params.productCode || 0);
+    const faceKobo = denomNaira > 0 ? Math.round(denomNaira * 100) : costKobo;
+    const discountedFace = faceKobo * (1 - discPct / 100);
+    const withMarkup = discountedFace * (1 + params.rule.markupPercent / 100) + params.rule.markupFlatKobo;
+    const sellingPriceKobo = Math.max(100, Math.round(withMarkup / 100) * 100);
+    const netProfitKobo = sellingPriceKobo + feeKobo - costKobo;
+    const marginPct = costKobo > 0 ? Number(((netProfitKobo / costKobo) * 100).toFixed(2)) : 0;
+    return {
+      sellingPriceKobo,
+      feeKobo,
+      discountPercent: discPct,
+      netProfitKobo,
+      profitMarginPercent: marginPct,
+    };
+  }
+
+  // Fixed-price plans (DATA, DATA_CARD, CABLE_TV, WAEC_PIN, JAMB_PIN, SMILE, SPECTRANET)
+  const rawSell = costKobo * (1 + params.rule.markupPercent / 100) + params.rule.markupFlatKobo;
+  const sellingPriceKobo = costKobo > 0 ? Math.max(100, Math.ceil(rawSell / 100) * 100) : 0;
+  const netProfitKobo = sellingPriceKobo + feeKobo - costKobo;
+  const marginPct = costKobo > 0 ? Number(((netProfitKobo / costKobo) * 100).toFixed(2)) : 0;
+  return {
+    sellingPriceKobo,
+    feeKobo,
+    discountPercent: discPct,
+    netProfitKobo,
+    profitMarginPercent: marginPct,
+  };
+}
+
 const VALID_EPIN_DENOMINATIONS = new Set([100, 200, 500, 1000]);
 
 /**

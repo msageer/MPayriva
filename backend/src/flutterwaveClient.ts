@@ -195,4 +195,157 @@ export class FlutterwaveClient {
     );
     return json;
   }
+
+  private cachedNgBanks: { expiresAt: number; banks: Array<{ code: string; name: string }> } | null = null;
+
+  async listNigerianBanks(): Promise<Array<{ code: string; name: string }>> {
+    const now = Date.now();
+    if (this.cachedNgBanks && this.cachedNgBanks.expiresAt > now) {
+      return this.cachedNgBanks.banks;
+    }
+    const { ok, json } = await this.requestJson(
+      "/banks/NG",
+      "GET",
+      "GET /v3/banks/NG",
+      "BANKS_NG"
+    );
+    if (!ok || json.status !== "success" || !Array.isArray(json.data)) {
+      throw new Error(String(json.message || "Unable to fetch Nigerian banks from Flutterwave"));
+    }
+    const banks = (json.data as Array<Record<string, unknown>>)
+      .map((item) => ({
+        code: String(item.code || "").trim(),
+        name: String(item.name || "").trim(),
+      }))
+      .filter((b) => b.code.length > 0 && b.name.length > 0)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    this.cachedNgBanks = {
+      expiresAt: now + 24 * 60 * 60 * 1000,
+      banks,
+    };
+    return banks;
+  }
+
+  async resolveBankAccount(params: {
+    accountNumber: string;
+    accountBank: string;
+  }): Promise<{ accountNumber: string; accountName: string }> {
+    const { ok, json } = await this.requestJson(
+      "/accounts/resolve",
+      "POST",
+      "POST /v3/accounts/resolve",
+      `${params.accountBank}_${params.accountNumber.slice(-4)}`,
+      {
+        account_number: params.accountNumber,
+        account_bank: params.accountBank,
+      }
+    );
+    if (!ok || json.status !== "success") {
+      throw new Error(String(json.message || "Unable to verify Nigerian bank account details"));
+    }
+    const data = (json.data || {}) as Record<string, unknown>;
+    const accountName = String(data.account_name || "").trim();
+    if (!accountName) {
+      throw new Error("Bank account resolved without an account holder name.");
+    }
+    return {
+      accountNumber: String(data.account_number || params.accountNumber).trim(),
+      accountName,
+    };
+  }
+
+  async initiateBankTransfer(params: {
+    accountBank: string;
+    accountNumber: string;
+    amountNaira: number;
+    narration: string;
+    reference: string;
+    beneficiaryName?: string;
+  }): Promise<{
+    id: number;
+    status: string;
+    reference: string;
+    completeMessage: string;
+    feeNaira: number;
+    amountNaira: number;
+    bankName: string;
+    fullName: string;
+    raw: Record<string, unknown>;
+  }> {
+    const body: Record<string, unknown> = {
+      account_bank: params.accountBank,
+      account_number: params.accountNumber,
+      amount: params.amountNaira,
+      currency: "NGN",
+      debit_currency: "NGN",
+      narration: params.narration,
+      reference: params.reference,
+    };
+    if (params.beneficiaryName) {
+      body.beneficiary_name = params.beneficiaryName;
+    }
+
+    const { ok, json } = await this.requestJson(
+      "/transfers",
+      "POST",
+      "POST /v3/transfers",
+      params.reference,
+      body
+    );
+    if (!ok || json.status !== "success") {
+      throw new Error(
+        String(
+          json.message ||
+            "Flutterwave live transfer could not be initiated. Ensure Transfers are enabled in your Flutterwave Dashboard Settings."
+        )
+      );
+    }
+    const data = (json.data || {}) as Record<string, unknown>;
+    return {
+      id: Number(data.id ?? 0),
+      status: String(data.status || "NEW").toUpperCase(),
+      reference: String(data.reference || params.reference),
+      completeMessage: String(data.complete_message || json.message || "Transfer queued with Flutterwave"),
+      feeNaira: Number(data.fee ?? 0),
+      amountNaira: Number(data.amount ?? params.amountNaira),
+      bankName: String(data.bank_name || ""),
+      fullName: String(data.full_name || params.beneficiaryName || ""),
+      raw: json,
+    };
+  }
+
+  async getTransferById(transferId: string): Promise<{
+    id: number;
+    status: string;
+    reference: string;
+    completeMessage: string;
+    feeNaira: number;
+    amountNaira: number;
+    bankName: string;
+    fullName: string;
+    raw: Record<string, unknown>;
+  }> {
+    const { ok, json } = await this.requestJson(
+      `/transfers/${encodeURIComponent(transferId)}`,
+      "GET",
+      "GET /v3/transfers/:id",
+      transferId
+    );
+    if (!ok || json.status !== "success") {
+      throw new Error(String(json.message || "Unable to fetch Flutterwave transfer status"));
+    }
+    const data = (json.data || {}) as Record<string, unknown>;
+    return {
+      id: Number(data.id ?? transferId),
+      status: String(data.status || "PENDING").toUpperCase(),
+      reference: String(data.reference || ""),
+      completeMessage: String(data.complete_message || json.message || ""),
+      feeNaira: Number(data.fee ?? 0),
+      amountNaira: Number(data.amount ?? 0),
+      bankName: String(data.bank_name || ""),
+      fullName: String(data.full_name || ""),
+      raw: json,
+    };
+  }
 }
