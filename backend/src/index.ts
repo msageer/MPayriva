@@ -980,10 +980,16 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
         }
       }
 
+      const providerIdent =
+        selectedApiProvider === "ALRAHUZDATA" && providerRes?.ident
+          ? String(providerRes.ident).trim()
+          : null;
+
       if (classified.resolution === "SUCCESSFUL") {
         await db.collection("transactions").doc(reference).update({
           status: "SUCCESSFUL",
           providerOrderId: classified.orderId,
+          ...(providerIdent ? { providerIdent } : {}),
           tokenOrPin: classified.tokenOrPin,
           serialNumber: classified.serialNumber,
           ...(classified.vouchers.length > 0 ? { vouchers: classified.vouchers } : {}),
@@ -1015,6 +1021,7 @@ app.post("/api/v1/transactions/purchase", requireAuth, async (req: Authenticated
         await db.collection("transactions").doc(reference).update({
           status: "PENDING",
           providerOrderId: classified.orderId,
+          ...(providerIdent ? { providerIdent } : {}),
           updatedAt: FieldValue.serverTimestamp(),
         });
         res.status(202).json({
@@ -1123,6 +1130,80 @@ async function handleClubKonnectCallback(req: Request, res: Response) {
 }
 app.get("/webhooks/clubkonnect", handleClubKonnectCallback);
 app.post("/webhooks/clubkonnect", handleClubKonnectCallback);
+
+// 6C. ALRAHUZDATA ASYNC WEBHOOK (Zero-trust: match by ident/id and independently requery AlrahuzData API)
+async function handleAlrahuzDataWebhook(req: Request, res: Response) {
+  const payload = (req.body && typeof req.body === "object" ? req.body : {}) as Record<string, unknown>;
+  const ident = String(payload.ident || req.query?.ident || "").trim();
+  const orderId = String(payload.id || req.query?.id || "").trim();
+
+  if (!ident && !orderId) {
+    // Respond HTTP 200 cleanly on webhook URL validation pings
+    res.status(200).json({ received: true, ok: true });
+    return;
+  }
+
+  let matchedRef = "";
+  try {
+    if (ident) {
+      const byIdent = await db
+        .collection("transactions")
+        .where("providerIdent", "==", ident)
+        .limit(1)
+        .get();
+      if (!byIdent.empty) {
+        matchedRef = byIdent.docs[0].id;
+      }
+    }
+    if (!matchedRef && orderId) {
+      const byOrder = await db
+        .collection("transactions")
+        .where("providerOrderId", "==", orderId)
+        .limit(1)
+        .get();
+      if (!byOrder.empty && String(byOrder.docs[0].data()?.provider || "").toUpperCase() === "ALRAHUZDATA") {
+        matchedRef = byOrder.docs[0].id;
+      }
+    }
+    if (!matchedRef && ident) {
+      const byOrderIdent = await db
+        .collection("transactions")
+        .where("providerOrderId", "==", ident)
+        .limit(1)
+        .get();
+      if (!byOrderIdent.empty && String(byOrderIdent.docs[0].data()?.provider || "").toUpperCase() === "ALRAHUZDATA") {
+        matchedRef = byOrderIdent.docs[0].id;
+      }
+    }
+  } catch {
+    // Fall through safely and acknowledge HTTP 200
+  }
+
+  await logProviderEvent({
+    provider: "ALRAHUZDATA",
+    action: "WEBHOOK /webhooks/alrahuzdata",
+    reference: matchedRef || ident || orderId,
+    statusCode: "200",
+    outcome: matchedRef ? "PENDING" : "IGNORED_EVENT",
+    message: matchedRef
+      ? `Received AlrahuzData update for ident=${ident || orderId}; verifying live order status.`
+      : `Received AlrahuzData webhook for unrecognized ident=${ident || orderId}.`,
+  });
+
+  if (!matchedRef) {
+    res.status(200).json({ received: true, ignored: true });
+    return;
+  }
+
+  try {
+    await reconcileTransactionWithClubKonnect(matchedRef);
+    res.status(200).json({ received: true, reconciled: matchedRef });
+  } catch {
+    res.status(200).json({ received: true, deferred: matchedRef });
+  }
+}
+app.get("/webhooks/alrahuzdata", handleAlrahuzDataWebhook);
+app.post("/webhooks/alrahuzdata", handleAlrahuzDataWebhook);
 
 function sanitizeDocId(raw: string, fallback: string): string {
   const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
