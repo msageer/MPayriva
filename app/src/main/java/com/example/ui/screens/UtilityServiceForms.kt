@@ -71,7 +71,9 @@ import com.example.data.remote.CustomerVerificationResponse
 import com.example.data.remote.LiveCatalogPlanDto
 import com.example.data.remote.LiveServiceAvailabilityGroupDto
 import com.example.data.remote.LiveStorefrontCatalogResponse
+import com.example.ui.components.DropdownOptionItem
 import com.example.ui.components.PurchaseSummaryItem
+import com.example.ui.components.ServiceDropdownField
 import com.example.ui.theme.EmeraldBright
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.NavyContainer
@@ -910,19 +912,34 @@ internal fun DataCardEpinForm(
                 onSelect = { selectedNetCode = it.clubKonnectCode }
             )
             Spacer(modifier = Modifier.height(14.dp))
-            Text("2. Select Printable Data Card Plan", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                networkPlans.forEach { plan ->
-                    CatalogPlanCard(
+            val dataCardOptions = remember(networkPlans) {
+                networkPlans.map { plan ->
+                    DropdownOptionItem(
+                        id = plan.id,
                         title = plan.productName,
-                        subtitle = listOf(plan.dataVolume, plan.validity).filter { it.isNotBlank() }.joinToString(" • ").ifBlank { "Printable Data PIN" },
-                        priceKobo = plan.sellingPriceKobo + plan.feeKobo,
-                        selected = selectedPlan?.id == plan.id,
-                        onClick = { selectedPlan = plan }
+                        subtitle = listOf(plan.dataVolume, plan.validity)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" • ")
+                            .ifBlank { "Printable Data PIN" },
+                        trailingBadge = CurrencyFormatter.formatKobo(plan.sellingPriceKobo + plan.feeKobo)
                     )
                 }
             }
+            val selectedDataCardOption = selectedPlan?.let { p ->
+                dataCardOptions.firstOrNull { it.id == p.id }
+            }
+            ServiceDropdownField(
+                label = "2. Printable Data Card Plan",
+                placeholder = "Select data card plan (${networkPlans.size})",
+                selectedItem = selectedDataCardOption,
+                options = dataCardOptions,
+                onSelect = { picked ->
+                    selectedPlan = networkPlans.firstOrNull { it.id == picked.id }
+                },
+                sheetTitle = "Select Data Card Plan",
+                searchPlaceholder = "Search data card plans…",
+                testTagName = "datacard_plan_dropdown"
+            )
             Spacer(modifier = Modifier.height(14.dp))
             QuantityStepperSection(
                 label = "3. Number of Data Cards",
@@ -1008,7 +1025,6 @@ internal fun BroadbandServiceForm(
     }
     var smileAccount by remember { mutableStateOf("") }
     var spectranetQty by remember { mutableIntStateOf(1) }
-    var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("All") }
 
     val activePlans = remember(broadbandPlans, provider) {
@@ -1031,24 +1047,58 @@ internal fun BroadbandServiceForm(
             "All"
         }
     }
-    val filteredGroupedPlans = remember(groupedAllPlans, effectiveCategory, searchQuery) {
-        val q = searchQuery.trim()
+    val categoryDropdownOptions = remember(categoryCounts, activePlans.size, provider) {
+        buildList {
+            add(
+                DropdownOptionItem(
+                    id = "All",
+                    title = "All Categories",
+                    subtitle = "Browse all $provider packages",
+                    trailingBadge = "${activePlans.size} plans"
+                )
+            )
+            categoryCounts.forEach { (cat, count) ->
+                add(
+                    DropdownOptionItem(
+                        id = cat,
+                        title = cat,
+                        subtitle = "$provider $cat packages",
+                        trailingBadge = "$count ${if (count == 1) "plan" else "plans"}"
+                    )
+                )
+            }
+        }
+    }
+    val selectedCategoryOption = categoryDropdownOptions.firstOrNull { it.id == effectiveCategory }
+        ?: categoryDropdownOptions.firstOrNull()
+
+    val plansForCategory = remember(groupedAllPlans, effectiveCategory) {
         groupedAllPlans
             .filter { (cat, _) -> effectiveCategory == "All" || cat == effectiveCategory }
-            .mapNotNull { (cat, items) ->
-                val matching = if (q.isEmpty()) items else items.filter {
-                    it.productName.contains(q, ignoreCase = true) ||
-                        it.validity.contains(q, ignoreCase = true) ||
-                        it.dataVolume.contains(q, ignoreCase = true) ||
-                        cat.contains(q, ignoreCase = true)
-                }
-                if (matching.isEmpty()) null else cat to matching
-            }
+            .flatMap { (cat, items) -> items.map { cat to it } }
     }
-    val visibleCount = filteredGroupedPlans.sumOf { it.second.size }
-    var selectedPlan by remember(activePlans) { mutableStateOf(activePlans.firstOrNull()) }
+    val broadbandPlanOptions = remember(plansForCategory, effectiveCategory, provider) {
+        plansForCategory.map { (cat, plan) ->
+            DropdownOptionItem(
+                id = plan.id,
+                title = plan.productName,
+                subtitle = listOf(
+                    cat,
+                    plan.dataVolume,
+                    plan.validity.ifBlank { if (provider == "SPECTRANET") "Printable Broadband PIN" else "Direct Smile Top-Up" }
+                ).filter { it.isNotBlank() }.distinct().joinToString(" • "),
+                trailingBadge = CurrencyFormatter.formatKobo(plan.sellingPriceKobo + plan.feeKobo),
+                groupLabel = if (effectiveCategory == "All" && categoryCounts.size > 1) cat else ""
+            )
+        }
+    }
+    var selectedPlan by remember(activePlans, effectiveCategory) { mutableStateOf<LiveCatalogPlanDto?>(null) }
+    val activeSelectedPlan = selectedPlan?.takeIf { sel -> plansForCategory.any { it.second.id == sel.id } }
+    val selectedPlanOption = activeSelectedPlan?.let { p ->
+        broadbandPlanOptions.firstOrNull { it.id == p.id }
+    }
 
-    ServiceFormCard(title = "Broadband Internet (${activePlans.size} Packages)") {
+    ServiceFormCard(title = "Broadband Internet") {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (smileEnabled) {
                 FilterChip(
@@ -1056,7 +1106,7 @@ internal fun BroadbandServiceForm(
                     onClick = {
                         provider = "SMILE"
                         selectedCategory = "All"
-                        searchQuery = ""
+                        selectedPlan = null
                         onClearVerification()
                     },
                     label = { Text("Smile 4G Direct") }
@@ -1068,7 +1118,7 @@ internal fun BroadbandServiceForm(
                     onClick = {
                         provider = "SPECTRANET"
                         selectedCategory = "All"
-                        searchQuery = ""
+                        selectedPlan = null
                         onClearVerification()
                     },
                     label = { Text("Spectranet e-PIN") }
@@ -1117,89 +1167,54 @@ internal fun BroadbandServiceForm(
             )
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            placeholder = {
-                Text(
-                    if (provider == "SMILE") "Search Smile packages (e.g. Unlimited, 10GB, Monthly)"
-                    else "Search Spectranet packages (e.g. Unified, Unlimited)"
-                )
-            },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search packages") },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("broadband_search_input")
-        )
-
         if (categoryCounts.size > 1) {
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = "Package Category",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            PlanCategoryFilterStrip(
-                categories = categoryCounts,
-                totalCount = activePlans.size,
-                selectedCategory = effectiveCategory,
-                onSelectCategory = { selectedCategory = it },
-                testTagPrefix = "broadband"
+            Spacer(modifier = Modifier.height(12.dp))
+            ServiceDropdownField(
+                label = "Package Category",
+                placeholder = "Select package category",
+                selectedItem = selectedCategoryOption,
+                options = categoryDropdownOptions,
+                onSelect = { picked ->
+                    selectedCategory = picked.id
+                    selectedPlan = null
+                },
+                sheetTitle = "$provider Categories",
+                showSearchThreshold = 10,
+                testTagName = "broadband_category_dropdown"
             )
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            text = if (effectiveCategory == "All") {
-                "Showing $visibleCount packages grouped by category"
-            } else {
-                "Showing $visibleCount $effectiveCategory packages (lowest to highest)"
+        ServiceDropdownField(
+            label = "Broadband Package",
+            placeholder = if (activePlans.isEmpty()) "No active $provider packages right now"
+            else "Choose a $provider package (${plansForCategory.size})",
+            selectedItem = selectedPlanOption,
+            options = broadbandPlanOptions,
+            onSelect = { picked ->
+                selectedPlan = plansForCategory.firstOrNull { it.second.id == picked.id }?.second
             },
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            sheetTitle = if (effectiveCategory == "All") "$provider Packages" else "$provider • $effectiveCategory",
+            searchPlaceholder = if (provider == "SMILE") "Search Smile packages (e.g. Unlimited, 10GB)"
+            else "Search Spectranet packages (e.g. Unified, Unlimited)",
+            emptyText = "No active $provider packages available right now. Tap Refresh at the top to retry.",
+            enabled = plansForCategory.isNotEmpty(),
+            testTagName = "broadband_plan_dropdown"
         )
-        Spacer(modifier = Modifier.height(8.dp))
-        if (filteredGroupedPlans.isEmpty()) {
-            Text(
-                text = if (activePlans.isEmpty()) "No active $provider packages available right now. Tap Refresh at the top to retry."
-                else "No packages match your filter. Select All or clear search.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+
+        if (activeSelectedPlan != null) {
+            val qty = if (provider == "SPECTRANET") spectranetQty else 1
+            Spacer(modifier = Modifier.height(12.dp))
+            PricePreviewBar(
+                label = if (provider == "SPECTRANET" && qty > 1) "Total (x$qty PINs)" else "Payable Total",
+                amountKobo = (activeSelectedPlan.sellingPriceKobo + activeSelectedPlan.feeKobo) * qty
             )
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                filteredGroupedPlans.forEach { (categoryName, categoryPlans) ->
-                    if (effectiveCategory == "All" && filteredGroupedPlans.size > 1) {
-                        PlanCategorySectionHeader(
-                            categoryName = categoryName,
-                            planCount = categoryPlans.size
-                        )
-                    }
-                    categoryPlans.forEach { plan ->
-                        CatalogPlanCard(
-                            title = plan.productName,
-                            subtitle = listOf(
-                                categoryName,
-                                plan.dataVolume,
-                                plan.validity.ifBlank { if (provider == "SPECTRANET") "Printable Broadband PIN" else "Direct Smile Top-Up" }
-                            ).filter { it.isNotBlank() }.distinct().joinToString(" • "),
-                            priceKobo = plan.sellingPriceKobo + plan.feeKobo,
-                            selected = selectedPlan?.id == plan.id,
-                            onClick = { selectedPlan = plan }
-                        )
-                    }
-                }
-            }
         }
 
         Spacer(modifier = Modifier.height(14.dp))
         Button(
             onClick = {
-                val plan = selectedPlan
+                val plan = activeSelectedPlan
                 if (plan == null) {
                     onValidationError("Select a broadband package first.")
                 } else if (provider == "SMILE" && smileAccount.length < 8) {
@@ -1231,7 +1246,7 @@ internal fun BroadbandServiceForm(
                     )
                 }
             },
-            enabled = selectedPlan != null,
+            enabled = activeSelectedPlan != null,
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
             modifier = Modifier
@@ -1274,26 +1289,35 @@ internal fun BettingServiceForm(
     val amountKobo = CurrencyFormatter.nairaToKobo(amountNaira) ?: 0L
     val feeKobo = selectedProvider.feeKobo
 
-    ServiceFormCard(title = "Betting Wallet Funding") {
-        Text("Select Betting Platform (${providers.size})", style = MaterialTheme.typography.labelLarge)
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            providers.forEach { company ->
-                FilterChip(
-                    selected = selectedProvider.providerCode.equals(company.providerCode, ignoreCase = true),
-                    onClick = {
-                        selectedProvider = company
-                        onClearVerification()
-                    },
-                    label = { Text(company.providerName) }
-                )
-            }
+    val bettingOptions = remember(providers) {
+        providers.map { company ->
+            DropdownOptionItem(
+                id = company.providerCode,
+                title = company.providerName,
+                subtitle = if (company.feeKobo > 0L) "Fee: ${CurrencyFormatter.formatKobo(company.feeKobo)}" else "Instant wallet top-up"
+            )
         }
+    }
+    val selectedBettingOption = bettingOptions.firstOrNull {
+        it.id.equals(selectedProvider.providerCode, ignoreCase = true)
+    }
+
+    ServiceFormCard(title = "Betting Wallet Funding") {
+        ServiceDropdownField(
+            label = "Betting Platform",
+            placeholder = "Select betting platform",
+            selectedItem = selectedBettingOption,
+            options = bettingOptions,
+            onSelect = { picked ->
+                providers.firstOrNull { it.providerCode.equals(picked.id, ignoreCase = true) }?.let {
+                    selectedProvider = it
+                    onClearVerification()
+                }
+            },
+            sheetTitle = "Select Betting Platform",
+            searchPlaceholder = "Search betting platform (e.g. Bet9ja, SportyBet, 1xBet)",
+            testTagName = "betting_platform_dropdown"
+        )
         Spacer(modifier = Modifier.height(10.dp))
         OutlinedTextField(
             value = customerId,

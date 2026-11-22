@@ -58,9 +58,11 @@ import com.example.data.model.UserProfile
 import com.example.data.remote.CustomerVerificationResponse
 import com.example.data.remote.LiveCatalogPlanDto
 import com.example.data.remote.LiveStorefrontCatalogResponse
+import com.example.ui.components.DropdownOptionItem
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.InlineStatusBanner
 import com.example.ui.components.PurchaseSummaryItem
+import com.example.ui.components.ServiceDropdownField
 import com.example.ui.components.TransactionPinConfirmationDialog
 import com.example.viewmodel.UiState
 
@@ -164,7 +166,6 @@ fun UtilityServicesScreen(
     var selectedNetwork by remember { mutableStateOf(NigerianProviders.telecomNetworks.first()) }
     var phoneInput by remember { mutableStateOf(CurrencyFormatter.toLocalElevenDigitPhone(profile.phoneNumber)) }
     var amountNairaInput by remember { mutableStateOf("500") }
-    var dataSearchQuery by remember { mutableStateOf("") }
     var selectedDataCategory by remember { mutableStateOf("All") }
     var selectedDataPlan by remember { mutableStateOf<LiveCatalogPlanDto?>(null) }
 
@@ -174,7 +175,6 @@ fun UtilityServicesScreen(
     var powerAmountNaira by remember { mutableStateOf("5000") }
 
     var selectedCableCode by remember { mutableStateOf(NigerianProviders.cableProviders.first().clubKonnectCode) }
-    var cableSearchQuery by remember { mutableStateOf("") }
     var smartCardNo by remember { mutableStateOf("") }
     var selectedCablePkg by remember { mutableStateOf<LiveCatalogPlanDto?>(null) }
 
@@ -402,24 +402,60 @@ fun UtilityServicesScreen(
                         }
                     }
 
-                    val filteredGroupedPlans = remember(groupedAllPlans, effectiveCategory, dataSearchQuery) {
-                        val q = dataSearchQuery.trim()
+                    val categoryDropdownOptions = remember(categoryCounts, allNetworkPlans.size) {
+                        buildList {
+                            add(
+                                DropdownOptionItem(
+                                    id = "All",
+                                    title = "All Categories",
+                                    subtitle = "Browse all ${selectedNetwork.shortCode} plans",
+                                    trailingBadge = "${allNetworkPlans.size} plans"
+                                )
+                            )
+                            categoryCounts.forEach { (cat, count) ->
+                                add(
+                                    DropdownOptionItem(
+                                        id = cat,
+                                        title = cat,
+                                        subtitle = "${selectedNetwork.shortCode} $cat data bundles",
+                                        trailingBadge = "$count ${if (count == 1) "plan" else "plans"}"
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    val selectedCategoryOption = categoryDropdownOptions.firstOrNull { it.id == effectiveCategory }
+                        ?: categoryDropdownOptions.firstOrNull()
+
+                    val plansForCategory = remember(groupedAllPlans, effectiveCategory) {
                         groupedAllPlans
                             .filter { (cat, _) -> effectiveCategory == "All" || cat == effectiveCategory }
-                            .mapNotNull { (cat, items) ->
-                                val matching = if (q.isEmpty()) items else items.filter {
-                                    it.productName.contains(q, ignoreCase = true) ||
-                                        it.dataVolume.contains(q, ignoreCase = true) ||
-                                        it.validity.contains(q, ignoreCase = true) ||
-                                        cat.contains(q, ignoreCase = true)
-                                }
-                                if (matching.isEmpty()) null else cat to matching
-                            }
+                            .flatMap { (cat, items) -> items.map { cat to it } }
                     }
-                    val visiblePlanCount = filteredGroupedPlans.sumOf { it.second.size }
 
-                    ServiceFormCard(title = "Mobile Data Bundles (${allNetworkPlans.size} Plans)") {
-                        Text("Select Mobile Network", style = MaterialTheme.typography.labelLarge)
+                    val planDropdownOptions = remember(plansForCategory, effectiveCategory) {
+                        plansForCategory.map { (cat, plan) ->
+                            DropdownOptionItem(
+                                id = plan.id,
+                                title = plan.productName,
+                                subtitle = listOf(cat, plan.dataVolume, plan.validity)
+                                    .filter { it.isNotBlank() }
+                                    .distinct()
+                                    .joinToString(" • "),
+                                trailingBadge = CurrencyFormatter.formatKobo(plan.sellingPriceKobo + plan.feeKobo),
+                                groupLabel = if (effectiveCategory == "All" && categoryCounts.size > 1) cat else ""
+                            )
+                        }
+                    }
+                    val activeDataPlan = selectedDataPlan?.takeIf { sel ->
+                        plansForCategory.any { it.second.id == sel.id }
+                    }
+                    val selectedPlanOption = activeDataPlan?.let { plan ->
+                        planDropdownOptions.firstOrNull { it.id == plan.id }
+                    }
+
+                    ServiceFormCard(title = "Mobile Data Bundles") {
+                        Text("Select Mobile Network", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(
                             modifier = Modifier
@@ -434,7 +470,6 @@ fun UtilityServicesScreen(
                                         selectedNetwork = net
                                         selectedDataPlan = null
                                         selectedDataCategory = "All"
-                                        dataSearchQuery = ""
                                     },
                                     label = { Text(net.shortCode, maxLines = 1, softWrap = false) }
                                 )
@@ -450,85 +485,59 @@ fun UtilityServicesScreen(
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier.fillMaxWidth()
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        OutlinedTextField(
-                            value = dataSearchQuery,
-                            onValueChange = { dataSearchQuery = it },
-                            placeholder = { Text("Search ${selectedNetwork.shortCode} plans (e.g. 1GB, SME, 30 days)") },
-                            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search plans") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("data_plan_search_input")
-                        )
 
                         if (categoryCounts.size > 1) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = "Plan Category",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            PlanCategoryFilterStrip(
-                                categories = categoryCounts,
-                                totalCount = allNetworkPlans.size,
-                                selectedCategory = effectiveCategory,
-                                onSelectCategory = { selectedDataCategory = it },
-                                testTagPrefix = "data"
+                            Spacer(modifier = Modifier.height(12.dp))
+                            ServiceDropdownField(
+                                label = "Data Category",
+                                placeholder = "Select data category",
+                                selectedItem = selectedCategoryOption,
+                                options = categoryDropdownOptions,
+                                onSelect = { picked ->
+                                    selectedDataCategory = picked.id
+                                    selectedDataPlan = null
+                                },
+                                sheetTitle = "${selectedNetwork.shortCode} Data Categories",
+                                showSearchThreshold = 10,
+                                testTagName = "data_category_dropdown"
                             )
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = if (effectiveCategory == "All") {
-                                "Showing $visiblePlanCount ${selectedNetwork.shortCode} plans grouped by category"
-                            } else {
-                                "Showing $visiblePlanCount ${selectedNetwork.shortCode} $effectiveCategory plans (lowest to highest)"
+                        ServiceDropdownField(
+                            label = "Data Plan",
+                            placeholder = if (isLoadingLive) "Loading ${selectedNetwork.shortCode} plans…"
+                            else "Choose a ${selectedNetwork.shortCode} data plan (${plansForCategory.size})",
+                            selectedItem = selectedPlanOption,
+                            options = planDropdownOptions,
+                            onSelect = { picked ->
+                                selectedDataPlan = plansForCategory.firstOrNull { it.second.id == picked.id }?.second
                             },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            sheetTitle = if (effectiveCategory == "All") {
+                                "${selectedNetwork.shortCode} Data Plans"
+                            } else {
+                                "${selectedNetwork.shortCode} • $effectiveCategory Plans"
+                            },
+                            searchPlaceholder = "Search ${selectedNetwork.shortCode} plans (e.g. 1GB, SME, 30 days)",
+                            emptyText = if (isLoadingLive) "Loading ${selectedNetwork.shortCode} data bundles…"
+                            else "No ${selectedNetwork.shortCode} data plans available right now.",
+                            enabled = !isLoadingLive && plansForCategory.isNotEmpty(),
+                            testTagName = "data_plan_dropdown"
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
 
-                        if (filteredGroupedPlans.isEmpty()) {
-                            Text(
-                                text = if (isLoadingLive) "Loading ${selectedNetwork.shortCode} data bundles…"
-                                else "No matching ${selectedNetwork.shortCode} data plans found. Try another category or clear search.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        if (activeDataPlan != null) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            PricePreviewBar(
+                                label = "Payable Total",
+                                amountKobo = activeDataPlan.sellingPriceKobo + activeDataPlan.feeKobo
                             )
-                        } else {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                filteredGroupedPlans.forEach { (categoryName, categoryPlans) ->
-                                    if (effectiveCategory == "All" && filteredGroupedPlans.size > 1) {
-                                        PlanCategorySectionHeader(
-                                            categoryName = categoryName,
-                                            planCount = categoryPlans.size
-                                        )
-                                    }
-                                    categoryPlans.forEach { plan ->
-                                        CatalogPlanCard(
-                                            title = plan.productName,
-                                            subtitle = listOf(categoryName, plan.dataVolume, plan.validity)
-                                                .filter { it.isNotBlank() }
-                                                .distinct()
-                                                .joinToString(" • "),
-                                            priceKobo = plan.sellingPriceKobo + plan.feeKobo,
-                                            selected = selectedDataPlan?.id == plan.id,
-                                            onClick = { selectedDataPlan = plan }
-                                        )
-                                    }
-                                }
-                            }
                         }
 
                         Spacer(modifier = Modifier.height(14.dp))
                         Button(
                             onClick = {
                                 validationError = null
-                                val plan = selectedDataPlan
+                                val plan = activeDataPlan
                                 if (!CurrencyFormatter.isValidNigerianPhone(phoneInput)) {
                                     validationError = "Enter a valid Nigerian phone number."
                                 } else if (plan == null) {
@@ -554,7 +563,7 @@ fun UtilityServicesScreen(
                                     )
                                 }
                             },
-                            enabled = selectedDataPlan != null,
+                            enabled = activeDataPlan != null,
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                             modifier = Modifier
@@ -607,26 +616,32 @@ fun UtilityServicesScreen(
                     val powerKobo = CurrencyFormatter.nairaToKobo(powerAmountNaira) ?: 0L
                     val effectivePowerPayableKobo = Math.round(powerKobo * (1.0 - powerDiscountPct / 100.0))
 
-                    ServiceFormCard(title = "Electricity Bill Payment (${discoList.size} DisCos)") {
-                        Text("Distribution Company (DisCo)", style = MaterialTheme.typography.labelLarge)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            discoList.forEach { (code, name, _) ->
-                                FilterChip(
-                                    selected = chosenDisco.first == code,
-                                    onClick = {
-                                        selectedDiscoCode = code
-                                        onClearVerification()
-                                    },
-                                    label = { Text(name) }
-                                )
-                            }
+                    val discoOptions = remember(discoList, isDirectApiMode) {
+                        discoList.map { (code, name, fee) ->
+                            DropdownOptionItem(
+                                id = code,
+                                title = name,
+                                subtitle = if (isDirectApiMode) "Direct wholesale rate • ₦0 fee"
+                                else "Service fee: ${CurrencyFormatter.formatKobo(fee)}"
+                            )
                         }
+                    }
+                    val selectedDiscoOption = discoOptions.firstOrNull { it.id == chosenDisco.first }
+
+                    ServiceFormCard(title = "Electricity Bill Payment") {
+                        ServiceDropdownField(
+                            label = "Distribution Company (DisCo)",
+                            placeholder = "Select electricity provider",
+                            selectedItem = selectedDiscoOption,
+                            options = discoOptions,
+                            onSelect = { picked ->
+                                selectedDiscoCode = picked.id
+                                onClearVerification()
+                            },
+                            sheetTitle = "Select Electricity DisCo",
+                            searchPlaceholder = "Search DisCo (e.g. EKEDC, IKEDC, AEDC, KEDCO)",
+                            testTagName = "electricity_disco_dropdown"
+                        )
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             FilterChip(
@@ -757,13 +772,29 @@ fun UtilityServicesScreen(
                         }.map { it.toLivePlanDto() }
                     }
 
-                    val filteredCablePkgs = remember(providerPackages, cableSearchQuery) {
-                        val q = cableSearchQuery.trim()
-                        if (q.isEmpty()) providerPackages
-                        else providerPackages.filter { it.productName.contains(q, ignoreCase = true) }
+                    val sortedCablePkgs = remember(providerPackages) {
+                        providerPackages.sortedBy { it.sellingPriceKobo + it.feeKobo }
+                    }
+                    val cablePkgOptions = remember(sortedCablePkgs) {
+                        sortedCablePkgs.map { pkg ->
+                            DropdownOptionItem(
+                                id = pkg.id,
+                                title = pkg.productName,
+                                subtitle = pkg.validity.ifBlank { "Cable TV subscription" },
+                                trailingBadge = CurrencyFormatter.formatKobo(pkg.sellingPriceKobo + pkg.feeKobo)
+                            )
+                        }
+                    }
+                    val activeCablePkg = selectedCablePkg?.takeIf { sel ->
+                        sortedCablePkgs.any { it.id == sel.id }
+                    }
+                    val selectedCableOption = activeCablePkg?.let { pkg ->
+                        cablePkgOptions.firstOrNull { it.id == pkg.id }
                     }
 
-                    ServiceFormCard(title = "Cable TV Subscriptions (${providerPackages.size} Bouquets)") {
+                    ServiceFormCard(title = "Cable TV Subscriptions") {
+                        Text("Select TV Provider", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.height(6.dp))
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -776,7 +807,6 @@ fun UtilityServicesScreen(
                                     onClick = {
                                         selectedCableCode = code
                                         selectedCablePkg = null
-                                        cableSearchQuery = ""
                                         onClearVerification()
                                     },
                                     label = { Text(name) }
@@ -818,41 +848,34 @@ fun UtilityServicesScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             VerifiedCustomerBox(verifiedCustomer)
                         }
-                        Spacer(modifier = Modifier.height(10.dp))
-                        OutlinedTextField(
-                            value = cableSearchQuery,
-                            onValueChange = { cableSearchQuery = it },
-                            placeholder = { Text("Search ${chosenCable.second} bouquets…") },
-                            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search bouquets") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.fillMaxWidth()
+                        Spacer(modifier = Modifier.height(12.dp))
+                        ServiceDropdownField(
+                            label = "${chosenCable.second} Bouquet",
+                            placeholder = if (isLoadingLive) "Loading ${chosenCable.second} bouquets…"
+                            else "Choose a ${chosenCable.second} bouquet (${sortedCablePkgs.size})",
+                            selectedItem = selectedCableOption,
+                            options = cablePkgOptions,
+                            onSelect = { picked ->
+                                selectedCablePkg = sortedCablePkgs.firstOrNull { it.id == picked.id }
+                            },
+                            sheetTitle = "${chosenCable.second} Bouquets",
+                            searchPlaceholder = "Search ${chosenCable.second} bouquets…",
+                            emptyText = if (isLoadingLive) "Loading ${chosenCable.second} bouquets…"
+                            else "No ${chosenCable.second} bouquets available right now.",
+                            enabled = !isLoadingLive && sortedCablePkgs.isNotEmpty(),
+                            testTagName = "cable_bouquet_dropdown"
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        if (filteredCablePkgs.isEmpty()) {
-                            Text(
-                                text = if (isLoadingLive) "Loading ${chosenCable.second} bouquets…"
-                                else "No matching ${chosenCable.second} bouquets found.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        if (activeCablePkg != null) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            PricePreviewBar(
+                                label = "Payable Total",
+                                amountKobo = activeCablePkg.sellingPriceKobo + activeCablePkg.feeKobo
                             )
-                        } else {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                filteredCablePkgs.forEach { pkg ->
-                                    CatalogPlanCard(
-                                        title = pkg.productName,
-                                        subtitle = pkg.validity.ifBlank { "Monthly subscription" },
-                                        priceKobo = pkg.sellingPriceKobo + pkg.feeKobo,
-                                        selected = selectedCablePkg?.id == pkg.id,
-                                        onClick = { selectedCablePkg = pkg }
-                                    )
-                                }
-                            }
                         }
                         Spacer(modifier = Modifier.height(14.dp))
                         Button(
                             onClick = {
-                                val pkg = selectedCablePkg
+                                val pkg = activeCablePkg
                                 if (smartCardNo.length < 8) {
                                     validationError = "Enter a valid SmartCard / IUC number."
                                 } else if (pkg == null) {
@@ -879,7 +902,7 @@ fun UtilityServicesScreen(
                                     )
                                 }
                             },
-                            enabled = selectedCablePkg != null,
+                            enabled = activeCablePkg != null,
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                             modifier = Modifier
@@ -930,20 +953,31 @@ fun UtilityServicesScreen(
                             }
                         }
                         if (examPlans.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text("Select Exam Product", style = MaterialTheme.typography.labelLarge)
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                examPlans.forEach { plan ->
-                                    CatalogPlanCard(
+                            val examOptions = remember(examPlans) {
+                                examPlans.map { plan ->
+                                    DropdownOptionItem(
+                                        id = plan.id,
                                         title = plan.productName,
                                         subtitle = "Printable Exam e-PIN",
-                                        priceKobo = plan.sellingPriceKobo + plan.feeKobo,
-                                        selected = activeExamPlan?.id == plan.id,
-                                        onClick = { selectedExamPlan = plan }
+                                        trailingBadge = CurrencyFormatter.formatKobo(plan.sellingPriceKobo + plan.feeKobo)
                                     )
                                 }
                             }
+                            val selectedExamOption = activeExamPlan?.let { p ->
+                                examOptions.firstOrNull { it.id == p.id }
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            ServiceDropdownField(
+                                label = "Exam Product",
+                                placeholder = "Select exam product",
+                                selectedItem = selectedExamOption,
+                                options = examOptions,
+                                onSelect = { picked ->
+                                    selectedExamPlan = examPlans.firstOrNull { it.id == picked.id }
+                                },
+                                sheetTitle = "Select Exam Product",
+                                testTagName = "exam_product_dropdown"
+                            )
                         }
                         Spacer(modifier = Modifier.height(12.dp))
                         if (selectedExamType == ServiceType.JAMB_PIN) {
