@@ -53,7 +53,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.core.CurrencyFormatter
 import com.example.data.model.AccountStatus
-import com.example.data.model.AccountType
 import com.example.data.model.SupportTicket
 import com.example.data.model.TicketStatus
 import com.example.data.model.TransactionRecord
@@ -89,8 +88,6 @@ fun AdminOverviewTab(
 
     // Combine server-aggregated metrics with live Firestore fallback so UI is rich immediately
     val totalUsers = metrics?.totalUsers ?: users.size
-    val individualUsers = metrics?.individualUsers ?: users.count { it.resolvedAccountType() == AccountType.INDIVIDUAL }
-    val businessUsers = metrics?.businessUsers ?: users.count { it.resolvedAccountType() == AccountType.BUSINESS }
     val activeUsers = metrics?.activeUsers ?: users.count { it.resolvedAccountStatus() == AccountStatus.ACTIVE }
     val restrictedUsers = metrics?.restrictedUsers ?: users.count { it.resolvedAccountStatus() != AccountStatus.ACTIVE }
     val vaUsers = metrics?.virtualAccountUsers ?: users.count { !it.virtualAccountNumber.isNullOrBlank() }
@@ -499,7 +496,7 @@ fun AdminOverviewTab(
                 OverviewMetricCard(
                     title = "Wallet Liabilities",
                     value = CurrencyFormatter.formatKobo(totalWalletLiability),
-                    subtitle = "$totalUsers Users ($individualUsers Ind • $businessUsers Biz)",
+                    subtitle = "$totalUsers Users ($activeUsers Active • $vaUsers VA)",
                     badgeText = if (restrictedUsers > 0) "$restrictedUsers Restricted" else "$vaUsers VA Active",
                     badgeColor = if (openTicketsCount > 0) StatusPending else StatusSuccess,
                     modifier = Modifier.weight(1f)

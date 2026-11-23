@@ -103,13 +103,8 @@ class FintechRepository(
     }
 
     suspend fun createUserProfile(
-        accountType: AccountType,
         fullName: String,
         phoneNumber: String,
-        businessName: String? = null,
-        contactPerson: String? = null,
-        businessAddress: String? = null,
-        businessCategory: String? = null,
         pin4Digits: String
     ): Result<Unit> {
         val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Not signed in"))
@@ -122,28 +117,16 @@ class FintechRepository(
             require(trimmedName.length in 2..100) { "Full name must be between 2 and 100 characters." }
             require(CurrencyFormatter.isValidNigerianPhone(normalizedPhone)) { "Enter a valid Nigerian phone number (e.g. 08012345678)." }
             require(pin4Digits.length == 4 && pin4Digits.all { it.isDigit() }) { "Transaction PIN must be exactly 4 digits." }
-            if (accountType == AccountType.BUSINESS) {
-                require(!businessName.isNullOrBlank() && businessName.trim().length in 2..120) {
-                    "Business name is required for Business accounts."
-                }
-                require(!businessAddress.isNullOrBlank() && businessAddress.trim().length in 5..250) {
-                    "Business address is required for Business accounts."
-                }
-            }
 
             val salt = PinHasher.generateSaltHex()
             val pinHash = PinHasher.hashPin(pin4Digits, salt)
 
             val userPayload = mapOf(
                 "userId" to uid,
-                "accountType" to accountType.name,
+                "accountType" to AccountType.INDIVIDUAL.name,
                 "fullName" to trimmedName,
                 "email" to email,
                 "phoneNumber" to normalizedPhone,
-                "businessName" to businessName?.trim()?.takeIf { it.isNotEmpty() },
-                "contactPerson" to contactPerson?.trim()?.takeIf { it.isNotEmpty() },
-                "businessAddress" to businessAddress?.trim()?.takeIf { it.isNotEmpty() },
-                "businessCategory" to businessCategory?.trim()?.takeIf { it.isNotEmpty() },
                 "accountStatus" to AccountStatus.ACTIVE.name,
                 "pinSet" to true,
                 "biometricEnabled" to false,
@@ -151,7 +134,7 @@ class FintechRepository(
                 "walletBalanceKobo" to 0L,
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
-            ).filterValues { it != null }
+            )
 
             val pinPayload = mapOf(
                 "userId" to uid,
@@ -179,10 +162,6 @@ class FintechRepository(
     suspend fun updateUserProfile(
         fullName: String,
         phoneNumber: String,
-        businessName: String? = null,
-        contactPerson: String? = null,
-        businessAddress: String? = null,
-        businessCategory: String? = null,
         biometricEnabled: Boolean
     ): Result<Unit> {
         val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Not signed in"))
@@ -193,16 +172,12 @@ class FintechRepository(
             require(trimmedName.length in 2..100) { "Full name must be between 2 and 100 characters." }
             require(CurrencyFormatter.isValidNigerianPhone(normalizedPhone)) { "Enter a valid Nigerian phone number." }
 
-            val updates = mutableMapOf<String, Any>(
+            val updates = mapOf<String, Any>(
                 "fullName" to trimmedName,
                 "phoneNumber" to normalizedPhone,
                 "biometricEnabled" to biometricEnabled,
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            businessName?.trim()?.takeIf { it.isNotEmpty() }?.let { updates["businessName"] = it }
-            contactPerson?.trim()?.takeIf { it.isNotEmpty() }?.let { updates["contactPerson"] = it }
-            businessAddress?.trim()?.takeIf { it.isNotEmpty() }?.let { updates["businessAddress"] = it }
-            businessCategory?.trim()?.takeIf { it.isNotEmpty() }?.let { updates["businessCategory"] = it }
 
             db.collection("users").document(uid).update(updates).await()
             Result.success(Unit)
@@ -210,6 +185,99 @@ class FintechRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun registerDeviceTokenFirestore(
+        deviceId: String,
+        token: String,
+        appVersion: String? = null,
+        deviceName: String? = null
+    ): Result<Unit> {
+        val uid = auth.currentUser?.uid ?: return Result.success(Unit)
+        val cleanToken = token.trim()
+        val cleanDeviceId = deviceId.trim().replace(Regex("[^a-zA-Z0-9_-]"), "_").take(80)
+        if (cleanToken.length < 20 || cleanToken.length > 300 || cleanDeviceId.isEmpty()) {
+            return Result.success(Unit)
+        }
+        val userRef = db.collection("users").document(uid)
+        val deviceRef = userRef.collection("devices").document(cleanDeviceId)
+        return try {
+            val userSnap = userRef.get().await()
+            if (!userSnap.exists()) return Result.success(Unit)
+
+            val existingDevice = deviceRef.get().await()
+            if (existingDevice.exists()) {
+                val updates = mutableMapOf<String, Any>(
+                    "token" to cleanToken,
+                    "platform" to "ANDROID",
+                    "active" to true,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                appVersion?.trim()?.takeIf { it.isNotEmpty() }?.let { updates["appVersion"] = it.take(40) }
+                deviceName?.trim()?.takeIf { it.isNotEmpty() }?.let { updates["deviceName"] = it.take(80) }
+                deviceRef.update(updates).await()
+            } else {
+                val payload = mutableMapOf<String, Any>(
+                    "deviceId" to cleanDeviceId,
+                    "userId" to uid,
+                    "token" to cleanToken,
+                    "platform" to "ANDROID",
+                    "active" to true,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                appVersion?.trim()?.takeIf { it.isNotEmpty() }?.let { payload["appVersion"] = it.take(40) }
+                deviceName?.trim()?.takeIf { it.isNotEmpty() }?.let { payload["deviceName"] = it.take(80) }
+                deviceRef.set(payload).await()
+            }
+
+            if (userSnap.getString("fcmToken") != cleanToken) {
+                userRef.update(
+                    mapOf(
+                        "fcmToken" to cleanToken,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, deviceRef.path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun unregisterDeviceTokenFirestore(
+        deviceId: String,
+        token: String? = null
+    ): Result<Unit> {
+        val uid = auth.currentUser?.uid ?: return Result.success(Unit)
+        val cleanDeviceId = deviceId.trim().replace(Regex("[^a-zA-Z0-9_-]"), "_").take(80)
+        val userRef = db.collection("users").document(uid)
+        return try {
+            if (cleanDeviceId.isNotEmpty()) {
+                userRef.collection("devices").document(cleanDeviceId).delete().await()
+            }
+            val userSnap = userRef.get().await()
+            if (userSnap.exists()) {
+                val legacyToken = userSnap.getString("fcmToken")
+                if (!legacyToken.isNullOrBlank() && (token.isNullOrBlank() || legacyToken == token.trim())) {
+                    userRef.update(
+                        mapOf(
+                            "fcmToken" to null,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, "${userRef.path}/devices/$cleanDeviceId")
             Result.failure(e)
         }
     }

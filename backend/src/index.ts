@@ -29,6 +29,7 @@ import {
   selectActiveProviderForService,
 } from "./providerControls";
 import { registerAdminTreasuryAndPricingRoutes } from "./adminRoutes";
+import { registerUserDeviceToken, unregisterUserDeviceToken } from "./notificationService";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -312,14 +313,14 @@ app.post("/api/v1/wallet/virtual-account", requireAuth, async (req: Authenticate
       firstName: nameParts[0] || "Customer",
       lastName: nameParts.slice(1).join(" ") || "MSageer",
       bvn: rawBvn || undefined,
-      narration: `M-SAGEER ${user.businessName || user.fullName}`,
+      narration: `M-SAGEER ${user.fullName || "User"}`,
     });
 
     const flwData = (flw.data || {}) as Record<string, unknown>;
     const bankName = String(flwData.bank_name || "Wema Bank");
     const accountNumber = String(flwData.account_number || "");
     const orderRef = String(flwData.order_ref || "");
-    const accountName = String(user.businessName || user.fullName);
+    const accountName = String(user.fullName || "M-Sageer User");
 
     await userRef.update({
       virtualBankName: bankName,
@@ -363,7 +364,7 @@ app.post("/api/v1/wallet/fund-card", requireAuth, async (req: AuthenticatedReque
       amountNaira: amountKobo / 100,
       email: String(user.email),
       phoneNumber: String(user.phoneNumber),
-      customerName: String(user.businessName || user.fullName),
+      customerName: String(user.fullName || "M-Sageer User"),
     });
 
     const link = String(((flw.data || {}) as Record<string, unknown>).link || "");
@@ -1900,6 +1901,54 @@ app.post("/api/v1/admin/catalog/sync-clubkonnect", requireAuth, requireAdmin, as
       discoveredProducts: liveCostsNaira.size,
       updatedCatalogItems: updatedCount,
       message: `Synced ClubKonnect feed (${liveCostsNaira.size} live products discovered, ${updatedCount} catalog items updated).`,
+    });
+  } catch (err) {
+    res.status(400).json({ status: "error", message: (err as Error).message });
+  }
+});
+
+// 9. CROSS-PLATFORM PUSH NOTIFICATIONS: MULTI-DEVICE TOKEN REGISTRATION & SIGN-OUT UNREGISTER
+app.post("/api/v1/notifications/register-token", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const uid = req.uid!;
+    const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+    if (token.length < 20 || token.length > 512) {
+      res.status(400).json({ status: "error", message: "Valid FCM push token is required." });
+      return;
+    }
+    const result = await registerUserDeviceToken({
+      userId: uid,
+      token,
+      platform: req.body?.platform,
+      deviceId: req.body?.deviceId,
+      appVersion: req.body?.appVersion,
+      deviceName: req.body?.deviceName,
+    });
+    res.json({
+      status: "success",
+      deviceId: result.deviceId,
+      platform: result.platform,
+      message: "Push notification device registered.",
+    });
+  } catch (err) {
+    res.status(400).json({ status: "error", message: (err as Error).message });
+  }
+});
+
+app.post("/api/v1/notifications/unregister-token", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const uid = req.uid!;
+    const token = typeof req.body?.token === "string" ? req.body.token.trim() : undefined;
+    const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : undefined;
+    const result = await unregisterUserDeviceToken({
+      userId: uid,
+      token,
+      deviceId,
+    });
+    res.json({
+      status: "success",
+      removedCount: result.removedCount,
+      message: "Device push token unregistered.",
     });
   } catch (err) {
     res.status(400).json({ status: "error", message: (err as Error).message });

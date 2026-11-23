@@ -477,3 +477,76 @@ test("Admin can configure non-secret HTTPS backendBaseUrl in platformConfig/bran
   );
 });
 
+// --- 8. CROSS-PLATFORM PUSH DEVICE REGISTRY (OWNER-ONLY) ---
+test("User can register, rotate, and unregister own push device token; cross-user and invalid tokens rejected", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const now = new Date(Date.now() - 2000);
+  const deviceId = "and_abcdef1234567890abcd";
+
+  // Owner registers valid Android push token
+  await assertSucceeds(
+    aliceDb
+      .collection("users")
+      .doc(ALICE_UID)
+      .collection("devices")
+      .doc(deviceId)
+      .set({
+        deviceId,
+        userId: ALICE_UID,
+        token: "fcm_token_valid_length_0123456789abcdef",
+        platform: "ANDROID",
+        active: true,
+        appVersion: "1.0",
+        deviceName: "Pixel 8",
+        createdAt: now,
+        updatedAt: now,
+      })
+  );
+
+  // Owner rotates token
+  await assertSucceeds(
+    aliceDb
+      .collection("users")
+      .doc(ALICE_UID)
+      .collection("devices")
+      .doc(deviceId)
+      .update({
+        token: "fcm_token_rotated_length_9876543210fedcba",
+        updatedAt: new Date(Date.now() - 500),
+      })
+  );
+
+  // Reject invalid platform or short token
+  await assertFails(
+    aliceDb
+      .collection("users")
+      .doc(ALICE_UID)
+      .collection("devices")
+      .doc("bad_device")
+      .set({
+        deviceId: "bad_device",
+        userId: ALICE_UID,
+        token: "short",
+        platform: "WINDOWS_PHONE",
+        active: true,
+        createdAt: now,
+        updatedAt: now,
+      })
+  );
+
+  // Bob cannot read, update, or delete Alice's registered push device
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).collection("devices").doc(deviceId).get()
+  );
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).collection("devices").doc(deviceId).delete()
+  );
+
+  // Owner unregisters device on sign-out
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("devices").doc(deviceId).delete()
+  );
+});
+
+

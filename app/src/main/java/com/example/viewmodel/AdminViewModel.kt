@@ -250,22 +250,55 @@ class AdminViewModel(
         viewModelScope.launch {
             _isBusy.value = true
             val result = repository.adminUpdateCustomerStatus(targetUserId, status, reason)
+            if (result.isSuccess && backendClient.isConfigured) {
+                val statusMsg = when (status) {
+                    AccountStatus.ACTIVE -> "Your M-Sageer Pay account is now active with full access."
+                    AccountStatus.RESTRICTED -> "Your account has been restricted.${reason?.trim()?.takeIf { it.isNotEmpty() }?.let { " Reason: $it" } ?: ""}"
+                    AccountStatus.SUSPENDED -> "Your account has been suspended.${reason?.trim()?.takeIf { it.isNotEmpty() }?.let { " Reason: $it" } ?: ""}"
+                }
+                backendClient.adminSendNotification(
+                    targetUserId = targetUserId,
+                    title = "Account Status Updated: ${status.name}",
+                    body = statusMsg,
+                    type = "ACCOUNT_STATUS"
+                )
+            }
             _isBusy.value = false
             result.onSuccess {
-                _statusBanner.value = ActionBanner("Customer status updated to ${status.name}.")
+                _statusBanner.value = ActionBanner("User status updated to ${status.name} & push alert sent.")
             }.onFailure { err ->
                 _statusBanner.value = ActionBanner(err.message ?: "Failed to update account", isError = true)
             }
         }
     }
 
-    fun respondToSupportTicket(ticketId: String, status: TicketStatus, response: String, notes: String?) {
+    fun respondToSupportTicket(
+        ticketId: String,
+        targetUserId: String = "",
+        status: TicketStatus,
+        response: String,
+        notes: String?
+    ) {
         viewModelScope.launch {
             _isBusy.value = true
             val result = repository.adminRespondToTicket(ticketId, status, response, notes)
+            val resolvedUid = targetUserId.ifBlank {
+                (allTicketsState.value as? UiState.Success)?.data
+                    ?.firstOrNull { it.id == ticketId }?.userId.orEmpty()
+            }
+            if (result.isSuccess && resolvedUid.isNotBlank() && backendClient.isConfigured) {
+                val preview = response.trim().ifBlank { "Ticket marked as ${status.label}." }.take(240)
+                backendClient.adminSendNotification(
+                    targetUserId = resolvedUid,
+                    title = "Support Reply (${status.label})",
+                    body = preview,
+                    type = "SUPPORT_REPLY",
+                    reference = ticketId
+                )
+            }
             _isBusy.value = false
             result.onSuccess {
-                _statusBanner.value = ActionBanner("Support ticket updated.")
+                _statusBanner.value = ActionBanner("Support ticket updated & customer notified.")
             }.onFailure { err ->
                 _statusBanner.value = ActionBanner(err.message ?: "Failed to update ticket", isError = true)
             }
@@ -375,12 +408,50 @@ class AdminViewModel(
     fun sendAnnouncementToUser(targetUserId: String, title: String, body: String) {
         viewModelScope.launch {
             _isBusy.value = true
-            val result = repository.adminSendNotification(targetUserId, title, body)
+            if (backendClient.isConfigured) {
+                val pushRes = backendClient.adminSendNotification(
+                    targetUserId = targetUserId,
+                    title = title.trim(),
+                    body = body.trim(),
+                    type = "ANNOUNCEMENT"
+                )
+                if (pushRes.isSuccess) {
+                    _isBusy.value = false
+                    val resp = pushRes.getOrNull()
+                    _statusBanner.value = ActionBanner(
+                        resp?.message?.ifBlank { "Push notification dispatched." } ?: "Push notification dispatched."
+                    )
+                    return@launch
+                }
+            }
+            val fallback = repository.adminSendNotification(targetUserId, title, body)
             _isBusy.value = false
-            result.onSuccess {
-                _statusBanner.value = ActionBanner("Notification dispatched.")
+            fallback.onSuccess {
+                _statusBanner.value = ActionBanner("In-app notification saved.")
             }.onFailure { err ->
                 _statusBanner.value = ActionBanner(err.message ?: "Failed to send notification", isError = true)
+            }
+        }
+    }
+
+    fun broadcastAnnouncementToAll(title: String, body: String) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val res = backendClient.adminSendNotification(
+                broadcastAll = true,
+                title = title.trim(),
+                body = body.trim(),
+                type = "ANNOUNCEMENT"
+            )
+            _isBusy.value = false
+            res.onSuccess { resp ->
+                _statusBanner.value = ActionBanner(
+                    resp.message.ifBlank {
+                        "Broadcast sent to ${resp.totalUsers} users (${resp.deliveredCount} devices)."
+                    }
+                )
+            }.onFailure { err ->
+                _statusBanner.value = ActionBanner(err.message ?: "Failed to broadcast announcement", isError = true)
             }
         }
     }

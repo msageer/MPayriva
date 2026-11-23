@@ -76,6 +76,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.core.BrandingConfig
 import com.example.core.CurrencyFormatter
 import com.example.core.VoucherPdfGenerator
+import com.example.core.VoucherSheetLayout
 import com.example.data.model.LedgerEntry
 import com.example.data.model.TransactionRecord
 import com.example.data.model.TransactionStatus
@@ -589,7 +590,7 @@ fun TransactionsScreen(
 fun TransactionReceiptDialog(
     transaction: TransactionRecord,
     isSubmitting: Boolean,
-    businessHeader: String = BrandingConfig.Default.appDisplayName,
+    sheetHeader: String = BrandingConfig.Default.appDisplayName,
     onDismiss: () -> Unit,
     onRequeryStatus: (String) -> Unit,
     onReportIssue: (String) -> Unit
@@ -725,13 +726,20 @@ fun TransactionReceiptDialog(
                         }
                     }
 
+                    val a4PageCount = VoucherSheetLayout.pageCountFor(printableVouchers.size)
                     Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "A4 Sheet Layout: $a4PageCount page${if (a4PageCount > 1) "s" else ""} • Fixed ${VoucherSheetLayout.CARDS_PER_PAGE} e-PINs/A4 size (${VoucherSheetLayout.COLUMNS}×${VoucherSheetLayout.ROWS})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
                     Button(
                         onClick = {
                             VoucherPdfGenerator.printOrSaveAsPdf(
                                 context = context,
                                 tx = transaction,
-                                businessHeader = businessHeader
+                                sheetHeader = sheetHeader
                             )
                         },
                         shape = RoundedCornerShape(14.dp),
@@ -743,7 +751,7 @@ fun TransactionReceiptDialog(
                     ) {
                         Icon(Icons.Filled.Print, contentDescription = "Print or save PDF", modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Print / Save E-PINs as PDF", fontWeight = FontWeight.Bold)
+                        Text("Print / Save A4 Sheet (30/Page)", fontWeight = FontWeight.Bold)
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedButton(
@@ -751,7 +759,7 @@ fun TransactionReceiptDialog(
                             VoucherPdfGenerator.shareVoucherPdf(
                                 context = context,
                                 tx = transaction,
-                                businessHeader = businessHeader
+                                sheetHeader = sheetHeader
                             )
                         },
                         shape = RoundedCornerShape(14.dp),
@@ -762,7 +770,7 @@ fun TransactionReceiptDialog(
                     ) {
                         Icon(Icons.Filled.PictureAsPdf, contentDescription = "Share PDF", modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Export / Share PDF Voucher Sheet", fontWeight = FontWeight.SemiBold)
+                        Text("Export / Share A4 PDF Voucher Sheet", fontWeight = FontWeight.SemiBold)
                     }
                 } else if (!transaction.tokenOrPin.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(10.dp))

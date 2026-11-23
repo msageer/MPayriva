@@ -487,6 +487,51 @@ data class AdminOverviewMetricsResponse(
     val allTimeMetrics: OverviewPeriodMetricsDto? = null
 )
 
+data class RegisterPushTokenRequest(
+    val token: String,
+    val platform: String = "ANDROID",
+    val deviceId: String,
+    val appVersion: String? = null,
+    val deviceName: String? = null
+)
+
+data class RegisterPushTokenResponse(
+    val status: String = "success",
+    val deviceId: String = "",
+    val platform: String = "ANDROID",
+    val message: String = ""
+)
+
+data class UnregisterPushTokenRequest(
+    val token: String? = null,
+    val deviceId: String? = null
+)
+
+data class UnregisterPushTokenResponse(
+    val status: String = "success",
+    val removedCount: Int = 0,
+    val message: String = ""
+)
+
+data class AdminSendNotificationRequest(
+    val targetUserId: String? = null,
+    val broadcastAll: Boolean = false,
+    val title: String,
+    val body: String,
+    val type: String = "ANNOUNCEMENT",
+    val reference: String? = null
+)
+
+data class PushDispatchResponse(
+    val status: String = "success",
+    val message: String = "",
+    val notificationId: String? = null,
+    val totalUsers: Int = 0,
+    val attemptedTokens: Int = 0,
+    val deliveredCount: Int = 0,
+    val prunedCount: Int = 0
+)
+
 interface BackendApiService {
     @GET("api/v1/catalog/live")
     suspend fun getLiveStorefrontCatalog(
@@ -664,6 +709,24 @@ interface BackendApiService {
         @Header("Authorization") bearerToken: String,
         @Body request: UpdateProviderControlsRequest
     ): Response<ProviderControlsResponse>
+
+    @POST("api/v1/notifications/register-token")
+    suspend fun registerPushToken(
+        @Header("Authorization") bearerToken: String,
+        @Body request: RegisterPushTokenRequest
+    ): Response<RegisterPushTokenResponse>
+
+    @POST("api/v1/notifications/unregister-token")
+    suspend fun unregisterPushToken(
+        @Header("Authorization") bearerToken: String,
+        @Body request: UnregisterPushTokenRequest
+    ): Response<UnregisterPushTokenResponse>
+
+    @POST("api/v1/admin/notifications/send")
+    suspend fun adminSendNotification(
+        @Header("Authorization") bearerToken: String,
+        @Body request: AdminSendNotificationRequest
+    ): Response<PushDispatchResponse>
 }
 
 class TrustedBackendClient(
@@ -844,6 +907,58 @@ class TrustedBackendClient(
 
     suspend fun adminUpdateProviderControls(request: UpdateProviderControlsRequest): Result<ProviderControlsResponse> =
         executeCall { it.adminUpdateProviderControls(requireBearerToken(), request) }
+
+    suspend fun registerPushToken(
+        token: String,
+        deviceId: String,
+        appVersion: String? = null,
+        deviceName: String? = null
+    ): Result<RegisterPushTokenResponse> =
+        executeCall {
+            it.registerPushToken(
+                requireBearerToken(),
+                RegisterPushTokenRequest(
+                    token = token,
+                    platform = "ANDROID",
+                    deviceId = deviceId,
+                    appVersion = appVersion,
+                    deviceName = deviceName
+                )
+            )
+        }
+
+    suspend fun unregisterPushToken(
+        deviceId: String? = null,
+        token: String? = null
+    ): Result<UnregisterPushTokenResponse> =
+        executeCall {
+            it.unregisterPushToken(
+                requireBearerToken(),
+                UnregisterPushTokenRequest(token = token, deviceId = deviceId)
+            )
+        }
+
+    suspend fun adminSendNotification(
+        targetUserId: String? = null,
+        broadcastAll: Boolean = false,
+        title: String,
+        body: String,
+        type: String = "ANNOUNCEMENT",
+        reference: String? = null
+    ): Result<PushDispatchResponse> =
+        executeCall {
+            it.adminSendNotification(
+                requireBearerToken(),
+                AdminSendNotificationRequest(
+                    targetUserId = targetUserId,
+                    broadcastAll = broadcastAll,
+                    title = title,
+                    body = body,
+                    type = type,
+                    reference = reference
+                )
+            )
+        }
 
     private suspend fun <T> executeCall(block: suspend (BackendApiService) -> Response<T>): Result<T> {
         return try {

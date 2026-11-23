@@ -478,6 +478,49 @@ test("Disabled API providers are strictly excluded from routing and transaction 
   assert.equal(cheapest, "ALRAHUZDATA");
 });
 
+test("Cross-platform FCM v1 payload builder targets Android channels, Apple APNs, and Web Push cleanly", async () => {
+  const {
+    buildCrossPlatformMulticastPayload,
+    isPrunableFcmErrorCode,
+    normalizePlatform,
+    resolveNotificationRouting,
+  } = await import("../src/notificationPayload.ts");
 
+  const payload = buildCrossPlatformMulticastPayload({
+    tokens: ["tok_android_12345678901234567890", "tok_ios_12345678901234567890"],
+    notificationId: "notif_abc_123",
+    title: "Wallet Credited",
+    body: "₦5,000.00 added to your wallet.",
+    type: "WALLET_FUNDING",
+    reference: "MSGR-FLW-999",
+    unreadBadgeCount: 3,
+    webLink: "https://msageer-pay-backend.onrender.com",
+  });
 
+  assert.equal(payload.tokens.length, 2);
+  assert.equal(payload.android.priority, "high");
+  assert.equal(payload.android.notification.channelId, "msageer_transactions");
+  assert.equal(payload.android.notification.tag, "notif_abc_123");
+  assert.equal(payload.apns.headers["apns-priority"], "10");
+  assert.equal(payload.apns.payload.aps.badge, 3);
+  assert.equal(payload.apns.payload.aps["interruption-level"], "time-sensitive");
+  assert.equal(payload.webpush.headers.Urgency, "high");
+  assert.equal(payload.data.route, "transaction_receipt");
+  assert.equal(payload.data.reference, "MSGR-FLW-999");
 
+  const supportRoute = resolveNotificationRouting("SUPPORT_REPLY");
+  assert.equal(supportRoute.channelId, "msageer_support");
+  assert.equal(supportRoute.route, "support");
+
+  const secRoute = resolveNotificationRouting("ACCOUNT_STATUS");
+  assert.equal(secRoute.channelId, "msageer_security");
+  assert.equal(secRoute.interruptionLevel, "time-sensitive");
+
+  assert.equal(normalizePlatform("iPhone"), "ios");
+  assert.equal(normalizePlatform("PWA"), "web");
+  assert.equal(normalizePlatform("android"), "android");
+
+  assert.equal(isPrunableFcmErrorCode("messaging/registration-token-not-registered"), true);
+  assert.equal(isPrunableFcmErrorCode("messaging/invalid-registration-token"), true);
+  assert.equal(isPrunableFcmErrorCode("messaging/server-unavailable"), false);
+});

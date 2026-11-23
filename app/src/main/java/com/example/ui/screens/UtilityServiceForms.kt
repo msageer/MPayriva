@@ -737,7 +737,7 @@ internal fun RechargeCardEpinForm(
         QuantityStepperSection(
             label = "3. Number of e-PINs",
             quantity = quantity,
-            presets = listOf(1, 5, 10, 20),
+            presets = listOf(1, 5, 10, 30),
             onQuantityChange = { quantity = it }
         )
 
@@ -789,7 +789,7 @@ internal fun RechargeCardEpinForm(
                     }
                 }
                 Text(
-                    text = "Dial *311*PIN# to load • Printable A4 PDF & thermal voucher sheet saved in History",
+                    text = "Dial *311*PIN# to load • Auto-fitted 30 e-PINs per A4 sheet (fixed card size even for 1–3 PINs)",
                     style = MaterialTheme.typography.bodySmall,
                     color = PureWhite.copy(alpha = 0.78f)
                 )
@@ -944,10 +944,16 @@ internal fun DataCardEpinForm(
             QuantityStepperSection(
                 label = "3. Number of Data Cards",
                 quantity = quantity,
-                presets = listOf(1, 5, 10, 20),
+                presets = listOf(1, 5, 10, 30),
                 onQuantityChange = { quantity = it }
             )
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Auto-fitted 30 Data PINs per A4 PDF sheet (exact same card size even for 1–3 PINs).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(10.dp))
             PricePreviewBar("Total for $quantity Data Card e-PINs", totalKobo)
             Spacer(modifier = Modifier.height(14.dp))
             Button(

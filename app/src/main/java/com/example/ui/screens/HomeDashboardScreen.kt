@@ -63,7 +63,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.core.CurrencyFormatter
-import com.example.data.model.AccountType
 import com.example.data.model.PlatformConfig
 import com.example.data.model.ServiceType
 import com.example.data.model.TransactionRecord
@@ -200,7 +199,7 @@ fun HomeDashboardScreen(
                                 shape = RoundedCornerShape(50)
                             ) {
                                 Text(
-                                    text = if (profile.resolvedAccountType() == AccountType.BUSINESS) "Business" else "Personal",
+                                    text = if (isAdmin) "Super Admin" else "User",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.secondary,
                                     fontWeight = FontWeight.Bold,

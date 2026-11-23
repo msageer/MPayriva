@@ -24,10 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Business
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
@@ -35,7 +32,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -67,8 +63,6 @@ import com.example.R
 import com.example.auth.attemptAutoSignIn
 import com.example.auth.onGoogleSignInClicked
 import com.example.core.BrandingConfig
-import com.example.data.model.AccountType
-import com.example.data.model.NigerianProviders
 import com.example.ui.components.InlineStatusBanner
 import com.example.ui.theme.EmeraldBright
 import com.example.ui.theme.NavyDeep
@@ -93,9 +87,9 @@ private val onboardingSlides = listOf(
         description = "MTN, Airtel, Glo, 9mobile, all Nigerian DisCos, DStv, GOtv, StarTimes, WAEC, JAMB and Recharge Card e-PINs."
     ),
     OnboardingSlide(
-        badge = "INDIVIDUALS & BUSINESSES",
-        title = "Built for Personal & Enterprise Reliability",
-        description = "PIN-protected checkout, verified provider reconciliation, downloadable receipts and responsive in-app support."
+        badge = "SECURE & RELIABLE",
+        title = "Built for Fast Everyday Payments",
+        description = "PIN-protected checkout, verified provider reconciliation, A4 30-per-sheet e-PIN printing, and instant push alerts."
     )
 )
 
@@ -360,23 +354,13 @@ fun AccountRegistrationScreen(
     onSignOut: () -> Unit,
     onReturnToAdmin: (() -> Unit)? = null,
     onSubmitRegistration: (
-        accountType: AccountType,
         fullName: String,
         phoneNumber: String,
-        businessName: String?,
-        contactPerson: String?,
-        businessAddress: String?,
-        businessCategory: String?,
         pin4Digits: String
     ) -> Unit
 ) {
-    var accountType by remember { mutableStateOf(AccountType.INDIVIDUAL) }
     var fullName by remember { mutableStateOf(initialName) }
     var phoneNumber by remember { mutableStateOf("") }
-    var businessName by remember { mutableStateOf("") }
-    var contactPerson by remember { mutableStateOf(initialName) }
-    var businessAddress by remember { mutableStateOf("") }
-    var businessCategory by remember { mutableStateOf(NigerianProviders.businessCategories.first()) }
     var pin by remember { mutableStateOf("") }
     var confirmPin by remember { mutableStateOf("") }
     var localError by remember { mutableStateOf<String?>(null) }
@@ -450,41 +434,6 @@ fun AccountRegistrationScreen(
                 )
             }
 
-            Text(
-                text = "Select Customer Category",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                AccountCategoryCard(
-                    title = "Individual",
-                    subtitle = "Personal wallet & bills",
-                    icon = Icons.Filled.Person,
-                    selected = accountType == AccountType.INDIVIDUAL,
-                    onClick = { accountType = AccountType.INDIVIDUAL },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("category_individual")
-                )
-                AccountCategoryCard(
-                    title = "Business",
-                    subtitle = "SME & corporate use",
-                    icon = Icons.Filled.Business,
-                    selected = accountType == AccountType.BUSINESS,
-                    onClick = { accountType = AccountType.BUSINESS },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("category_business")
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
             OutlinedTextField(
                 value = fullName,
                 onValueChange = { fullName = it },
@@ -508,56 +457,6 @@ fun AccountRegistrationScreen(
                     .fillMaxWidth()
                     .testTag("reg_phone_number")
             )
-
-            if (accountType == AccountType.BUSINESS) {
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = businessName,
-                    onValueChange = { businessName = it },
-                    label = { Text("Registered Business Name") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("reg_business_name")
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = contactPerson,
-                    onValueChange = { contactPerson = it },
-                    label = { Text("Primary Contact Person") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = businessAddress,
-                    onValueChange = { businessAddress = it },
-                    label = { Text("Business Address (City & State)") },
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Business Category",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    NigerianProviders.businessCategories.take(3).forEach { cat ->
-                        FilterChip(
-                            selected = businessCategory == cat,
-                            onClick = { businessCategory = cat },
-                            label = { Text(cat.substringBefore(" "), maxLines = 1) }
-                        )
-                    }
-                }
-            }
 
             Spacer(modifier = Modifier.height(18.dp))
             Card(
@@ -625,20 +524,11 @@ fun AccountRegistrationScreen(
                     when {
                         fullName.trim().length < 2 -> localError = "Please enter your full name."
                         phoneNumber.trim().length < 10 -> localError = "Please enter a valid Nigerian phone number."
-                        accountType == AccountType.BUSINESS && businessName.trim().length < 2 ->
-                            localError = "Please enter your registered business name."
-                        accountType == AccountType.BUSINESS && businessAddress.trim().length < 5 ->
-                            localError = "Please enter your business address."
                         pin.length != 4 -> localError = "Transaction PIN must be exactly 4 digits."
                         pin != confirmPin -> localError = "Transaction PIN entries do not match."
                         else -> onSubmitRegistration(
-                            accountType,
                             fullName,
                             phoneNumber,
-                            if (accountType == AccountType.BUSINESS) businessName else null,
-                            if (accountType == AccountType.BUSINESS) contactPerson else null,
-                            if (accountType == AccountType.BUSINESS) businessAddress else null,
-                            if (accountType == AccountType.BUSINESS) businessCategory else null,
                             pin
                         )
                     }
@@ -666,62 +556,6 @@ fun AccountRegistrationScreen(
                 }
             }
             Spacer(modifier = Modifier.height(24.dp))
-        }
-    }
-}
-
-@Composable
-private fun AccountCategoryCard(
-    title: String,
-    subtitle: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
-        ),
-        border = BorderStroke(
-            width = if (selected) 2.dp else 1.dp,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
-        )
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = title,
-                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (selected) {
-                    Icon(
-                        imageVector = Icons.Filled.CheckCircle,
-                        contentDescription = "Selected",
-                        tint = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }

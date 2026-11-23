@@ -52,7 +52,7 @@ service cloud.firestore {
 
     function isValidUserProfile(data) {
       return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
-             data.accountType in ['INDIVIDUAL', 'BUSINESS'] &&
+             data.accountType in ['USER', 'INDIVIDUAL', 'BUSINESS'] &&
              data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100 &&
              data.email is string && data.email.size() >= 5 && data.email.size() <= 160 &&
              data.phoneNumber is string && data.phoneNumber.size() >= 10 && data.phoneNumber.size() <= 20 &&
@@ -122,9 +122,21 @@ service cloud.firestore {
       return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
              data.title is string && data.title.size() >= 2 && data.title.size() <= 120 &&
              data.body is string && data.body.size() >= 2 && data.body.size() <= 600 &&
-             data.type in ['WALLET_FUNDING', 'PURCHASE_SUCCESS', 'PURCHASE_FAILED', 'TRANSACTION_PENDING', 'REFUND', 'ANNOUNCEMENT'] &&
+             data.type in ['WALLET_FUNDING', 'PURCHASE_SUCCESS', 'PURCHASE_FAILED', 'TRANSACTION_PENDING', 'REFUND', 'ANNOUNCEMENT', 'SUPPORT_REPLY', 'SECURITY_ALERT', 'ACCOUNT_STATUS'] &&
              isOptString(data, 'reference', 100) &&
              data.read is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidUserDevice(data) {
+      return data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 80 &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.token is string && data.token.size() >= 20 && data.token.size() <= 512 &&
+             data.platform in ['ANDROID', 'IOS', 'WEB'] &&
+             data.active is bool &&
+             isOptString(data, 'appVersion', 40) &&
+             isOptString(data, 'deviceName', 80) &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt);
     }
@@ -245,6 +257,37 @@ service cloud.firestore {
                          ]);
 
         allow delete: if false;
+      }
+
+      // Subcollection: Cross-platform push notification device registry (strictly owner-only)
+      match /devices/{deviceId} {
+        allow get: if isOwner(userId) && isValidId(deviceId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(deviceId) &&
+                         isValidUserDevice(incoming()) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().deviceId == deviceId &&
+                         incoming().keys().hasAll([
+                           'deviceId', 'userId', 'token', 'platform', 'active', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'deviceId', 'userId', 'token', 'platform', 'active',
+                           'appVersion', 'deviceName', 'createdAt', 'updatedAt'
+                         ]);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(deviceId) &&
+                         isValidUserDevice(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().deviceId == existing().deviceId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'token', 'platform', 'active', 'appVersion', 'deviceName', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(deviceId);
       }
     }
 

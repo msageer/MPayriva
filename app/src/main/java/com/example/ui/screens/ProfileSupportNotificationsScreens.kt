@@ -27,7 +27,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.AdminPanelSettings
-import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fingerprint
@@ -68,7 +67,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.core.BrandingConfig
 import com.example.core.CurrencyFormatter
-import com.example.data.model.AccountType
 import com.example.data.model.CustomerNotification
 import com.example.data.model.SupportCategory
 import com.example.data.model.SupportTicket
@@ -87,10 +85,6 @@ fun ProfileScreen(
     onSaveProfile: (
         fullName: String,
         phoneNumber: String,
-        businessName: String?,
-        contactPerson: String?,
-        businessAddress: String?,
-        businessCategory: String?,
         biometricEnabled: Boolean
     ) -> Unit,
     onChangePin: (currentPin: String, newPin: String, onDone: () -> Unit) -> Unit,
@@ -101,9 +95,6 @@ fun ProfileScreen(
 ) {
     var fullName by remember(profile.fullName) { mutableStateOf(profile.fullName) }
     var phone by remember(profile.phoneNumber) { mutableStateOf(profile.phoneNumber) }
-    var businessName by remember(profile.businessName) { mutableStateOf(profile.businessName ?: "") }
-    var contactPerson by remember(profile.contactPerson) { mutableStateOf(profile.contactPerson ?: "") }
-    var businessAddress by remember(profile.businessAddress) { mutableStateOf(profile.businessAddress ?: "") }
     var biometricEnabled by remember(profile.biometricEnabled) { mutableStateOf(profile.biometricEnabled) }
     var showChangePinDialog by remember { mutableStateOf(false) }
 
@@ -132,7 +123,7 @@ fun ProfileScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = if (profile.resolvedAccountType() == AccountType.BUSINESS) Icons.Filled.Business else Icons.Filled.Person,
+                            imageVector = if (isAdmin) Icons.Filled.AdminPanelSettings else Icons.Filled.Person,
                             contentDescription = "Profile",
                             tint = PureWhite,
                             modifier = Modifier.size(28.dp)
@@ -153,7 +144,7 @@ fun ProfileScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "${profile.accountType} • Status: ${profile.accountStatus}",
+                            text = "${if (isAdmin) "Super Admin" else "User"} • Status: ${profile.accountStatus}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.tertiary
                         )
@@ -207,31 +198,6 @@ fun ProfileScreen(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
-                    if (profile.resolvedAccountType() == AccountType.BUSINESS) {
-                        OutlinedTextField(
-                            value = businessName,
-                            onValueChange = { businessName = it },
-                            label = { Text("Business Name") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = contactPerson,
-                            onValueChange = { contactPerson = it },
-                            label = { Text("Contact Person") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = businessAddress,
-                            onValueChange = { businessAddress = it },
-                            label = { Text("Business Address") },
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -252,10 +218,6 @@ fun ProfileScreen(
                             onSaveProfile(
                                 fullName,
                                 phone,
-                                businessName.takeIf { it.isNotBlank() },
-                                contactPerson.takeIf { it.isNotBlank() },
-                                businessAddress.takeIf { it.isNotBlank() },
-                                profile.businessCategory,
                                 biometricEnabled
                             )
                         },
@@ -399,7 +361,7 @@ fun SupportScreen(
     val faqs = listOf(
         "How long does bank transfer wallet funding take?" to "Dedicated Flutterwave virtual bank transfers credit automatically once the bank settlement webhook is verified by our backend, typically within 1–3 minutes.",
         "What happens if an electricity or data purchase is Pending?" to "Never retry immediately. Open the transaction receipt and tap 'Verify Status with Provider'. Our platform checks the live delivery status automatically and either delivers your token or reverses confirmed failures.",
-        "How do Business accounts differ from Individual accounts?" to "Business customers can register with business details and receipts while sharing the same secure wallet infrastructure and pricing policies."
+        "How are Recharge & Data e-PINs formatted for A4 printing?" to "Every printable e-PIN PDF automatically uses a fixed 30-PIN A4 grid (3 columns × 10 rows). Even if you print 1 or 3 PINs, each card keeps the exact 1/30th A4 size so sheets cut cleanly every time."
     )
 
     Scaffold(

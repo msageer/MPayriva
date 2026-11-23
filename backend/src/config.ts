@@ -121,52 +121,18 @@ export async function notifyCustomer(params: {
   userId: string;
   title: string;
   body: string;
-  type: "WALLET_FUNDING" | "PURCHASE_SUCCESS" | "PURCHASE_FAILED" | "TRANSACTION_PENDING" | "REFUND" | "ANNOUNCEMENT";
+  type:
+    | "WALLET_FUNDING"
+    | "PURCHASE_SUCCESS"
+    | "PURCHASE_FAILED"
+    | "TRANSACTION_PENDING"
+    | "REFUND"
+    | "ANNOUNCEMENT"
+    | "SUPPORT_REPLY"
+    | "SECURITY_ALERT"
+    | "ACCOUNT_STATUS";
   reference?: string;
 }) {
-  const payload: Record<string, unknown> = {
-    userId: params.userId,
-    title: params.title,
-    body: params.body,
-    type: params.type,
-    read: false,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-  if (params.reference) payload.reference = params.reference;
-  await db.collection("notifications").add(payload);
-
-  // Dispatch FCM push notification if the customer registered an fcmToken
-  const userSnap = await db.collection("users").doc(params.userId).get();
-  const fcmToken = userSnap.data()?.fcmToken;
-  if (typeof fcmToken === "string" && fcmToken.length > 20) {
-    try {
-      await messagingAdmin.send({
-        token: fcmToken,
-        notification: { title: params.title, body: params.body },
-        data: {
-          type: params.type,
-          reference: params.reference || "",
-          title: params.title,
-          body: params.body,
-        },
-        android: {
-          priority: "high",
-          notification: {
-            channelId: "msageer_transactions",
-            sound: "default",
-          },
-        },
-      });
-    } catch (fcmErr) {
-      await logProviderEvent({
-        provider: "SYSTEM",
-        action: "FCM_PUSH",
-        reference: params.reference || params.userId,
-        statusCode: "FCM_ERR",
-        outcome: "ERROR",
-        message: String((fcmErr as Error).message || "FCM push failed").slice(0, 280),
-      });
-    }
-  }
+  const { sendCrossPlatformNotification } = await import("./notificationService");
+  return sendCrossPlatformNotification(params);
 }

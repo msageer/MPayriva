@@ -21,6 +21,11 @@ import {
   isProviderEnabled,
   saveProviderControls,
 } from "./providerControls";
+import { NotificationEventType } from "./notificationPayload";
+import {
+  broadcastCrossPlatformAnnouncement,
+  sendCrossPlatformNotification,
+} from "./notificationService";
 
 export interface AdminAuthedRequest extends Request {
   uid?: string;
@@ -837,8 +842,7 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
       for (const doc of usersDocs) {
         const u = doc.data();
         totalUsers += 1;
-        if (String(u.accountType || "INDIVIDUAL").toUpperCase() === "BUSINESS") businessUsers += 1;
-        else individualUsers += 1;
+        individualUsers += 1;
         if (String(u.accountStatus || "ACTIVE").toUpperCase() === "ACTIVE") activeUsers += 1;
         else restrictedUsers += 1;
         if (u.virtualAccountNumber) virtualAccountUsers += 1;
@@ -1070,6 +1074,89 @@ export function registerAdminTreasuryAndPricingRoutes(app: Express, deps: AdminR
         weeklyMetrics: serializedWeekly,
         monthlyMetrics: serializedMonthly,
         allTimeMetrics: serializedAllTime,
+      });
+    } catch (err) {
+      res.status(400).json({ status: "error", message: (err as Error).message });
+    }
+  });
+
+  // =========================================================================
+  // 8. ADMIN CROSS-PLATFORM PUSH NOTIFICATIONS (TARGETED OR BROADCAST ALL)
+  // =========================================================================
+  const ALLOWED_ADMIN_PUSH_TYPES = new Set<NotificationEventType>([
+    "ANNOUNCEMENT",
+    "SUPPORT_REPLY",
+    "SECURITY_ALERT",
+    "ACCOUNT_STATUS",
+    "WALLET_FUNDING",
+    "PURCHASE_SUCCESS",
+    "PURCHASE_FAILED",
+    "TRANSACTION_PENDING",
+    "REFUND",
+  ]);
+
+  app.post("/api/v1/admin/notifications/send", requireAuth, requireAdmin, async (req: AdminAuthedRequest, res: Response) => {
+    try {
+      const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+      const body = typeof req.body?.body === "string" ? req.body.body.trim() : "";
+      const targetUserId = typeof req.body?.targetUserId === "string" ? req.body.targetUserId.trim() : "";
+      const broadcastAll = req.body?.broadcastAll === true;
+      const reference = typeof req.body?.reference === "string" ? req.body.reference.trim() : undefined;
+      const rawType = String(req.body?.type || "ANNOUNCEMENT").trim().toUpperCase() as NotificationEventType;
+      const type: NotificationEventType = ALLOWED_ADMIN_PUSH_TYPES.has(rawType) ? rawType : "ANNOUNCEMENT";
+
+      if (title.length < 2 || title.length > 120) {
+        res.status(400).json({ status: "error", message: "Title must be between 2 and 120 characters." });
+        return;
+      }
+      if (body.length < 2 || body.length > 600) {
+        res.status(400).json({ status: "error", message: "Message must be between 2 and 600 characters." });
+        return;
+      }
+      if (!broadcastAll && !targetUserId) {
+        res.status(400).json({ status: "error", message: "Specify targetUserId or set broadcastAll: true." });
+        return;
+      }
+
+      if (broadcastAll) {
+        const result = await broadcastCrossPlatformAnnouncement({ title, body, reference });
+        await logProviderEvent({
+          provider: "SYSTEM",
+          action: "ADMIN_PUSH_BROADCAST",
+          reference: reference || `broadcast_${Date.now()}`,
+          statusCode: "200",
+          outcome: "SUCCESS",
+          message: `Broadcasted announcement to ${result.totalUsers} users (${result.deliveredCount}/${result.attemptedTokens} devices delivered, ${result.prunedCount} stale pruned).`,
+        });
+        res.json({
+          status: "success",
+          totalUsers: result.totalUsers,
+          attemptedTokens: result.attemptedTokens,
+          deliveredCount: result.deliveredCount,
+          prunedCount: result.prunedCount,
+          message: `Announcement sent to ${result.totalUsers} user(s) (${result.deliveredCount} push device${result.deliveredCount === 1 ? "" : "s"} delivered).`,
+        });
+        return;
+      }
+
+      const result = await sendCrossPlatformNotification({
+        userId: targetUserId,
+        title,
+        body,
+        type,
+        reference,
+      });
+
+      res.json({
+        status: "success",
+        notificationId: result.notificationId,
+        attemptedTokens: result.attemptedTokens,
+        deliveredCount: result.deliveredCount,
+        prunedCount: result.prunedCount,
+        message:
+          result.deliveredCount > 0
+            ? `Notification delivered to ${result.deliveredCount} device(s) and saved to user inbox.`
+            : "Notification saved to user inbox (no active push token registered yet).",
       });
     } catch (err) {
       res.status(400).json({ status: "error", message: (err as Error).message });

@@ -115,18 +115,12 @@ data class UserProfile(
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
-    fun resolvedAccountType(): AccountType =
-        AccountType.entries.firstOrNull { it.name == accountType } ?: AccountType.INDIVIDUAL
+    fun resolvedAccountType(): AccountType = AccountType.INDIVIDUAL
 
     fun resolvedAccountStatus(): AccountStatus =
         AccountStatus.entries.firstOrNull { it.name == accountStatus } ?: AccountStatus.ACTIVE
 
-    fun displayTitle(): String =
-        if (resolvedAccountType() == AccountType.BUSINESS && !businessName.isNullOrBlank()) {
-            businessName
-        } else {
-            fullName.ifBlank { email.substringBefore("@") }
-        }
+    fun displayTitle(): String = fullName.ifBlank { email.substringBefore("@") }
 }
 
 @Keep

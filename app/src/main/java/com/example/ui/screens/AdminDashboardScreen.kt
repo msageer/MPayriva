@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.core.BrandingConfig
 import com.example.core.CurrencyFormatter
 import com.example.data.model.AccountStatus
 import com.example.data.model.SupportTicket
@@ -111,8 +112,9 @@ fun AdminDashboardScreen(
     var managingUser by remember { mutableStateOf<UserProfile?>(null) }
     var replyingTicket by remember { mutableStateOf<SupportTicket?>(null) }
     var notifyingUser by remember { mutableStateOf<UserProfile?>(null) }
+    var showBroadcastDialog by remember { mutableStateOf(false) }
 
-    val tabs = listOf("Overview", "Treasury", "Pricing", "Customers", "API & Logs", "Support")
+    val tabs = listOf("Overview", "Treasury", "Pricing", "Users", "API & Logs", "Support")
 
     Scaffold(
         topBar = {
@@ -238,12 +240,33 @@ fun AdminDashboardScreen(
                 )
 
                 3 -> {
-                    // CUSTOMERS
+                    // USERS & PUSH BROADCAST
                     LazyColumn(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        item {
+                            Button(
+                                onClick = { showBroadcastDialog = true },
+                                enabled = !isBusy,
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("admin_broadcast_push_button")
+                            ) {
+                                Icon(Icons.Filled.NotificationsActive, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Broadcast Push Announcement to All Users", fontWeight = FontWeight.Bold)
+                            }
+                        }
                         items(users, key = { it.id.ifBlank { it.userId } }) { user ->
+                            val roleLabel = if (user.email.equals(BrandingConfig.Default.bootstrappedAdminEmail, ignoreCase = true)) {
+                                "Super Admin"
+                            } else {
+                                "User"
+                            }
                             Card(
                                 shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -260,7 +283,7 @@ fun AdminDashboardScreen(
                                             Text(user.displayTitle(), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                             Text("${user.email} • ${user.phoneNumber}", style = MaterialTheme.typography.bodySmall)
                                             Text(
-                                                "${user.accountType} • Balance: ${CurrencyFormatter.formatKobo(user.walletBalanceKobo)}",
+                                                "$roleLabel • Balance: ${CurrencyFormatter.formatKobo(user.walletBalanceKobo)}",
                                                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono)
                                             )
                                         }
@@ -619,7 +642,13 @@ fun AdminDashboardScreen(
             },
             confirmButton = {
                 Button(onClick = {
-                    adminViewModel.respondToSupportTicket(ticket.id, status, response, notes)
+                    adminViewModel.respondToSupportTicket(
+                        ticketId = ticket.id,
+                        targetUserId = ticket.userId,
+                        status = status,
+                        response = response,
+                        notes = notes
+                    )
                     replyingTicket = null
                 }) { Text("Save") }
             },
@@ -627,13 +656,13 @@ fun AdminDashboardScreen(
         )
     }
 
-    // Send Notification Dialog
+    // Send Notification Dialog (Direct Push)
     notifyingUser?.let { user ->
         var title by remember(user.userId) { mutableStateOf("Platform Notice") }
         var body by remember(user.userId) { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { notifyingUser = null },
-            title = { Text("Notify ${user.displayTitle()}") },
+            title = { Text("Push Alert to ${user.displayTitle()}") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") })
@@ -647,9 +676,40 @@ fun AdminDashboardScreen(
                         notifyingUser = null
                     },
                     enabled = title.trim().length >= 2 && body.trim().length >= 2
-                ) { Text("Send") }
+                ) { Text("Send Push") }
             },
             dismissButton = { TextButton(onClick = { notifyingUser = null }) { Text("Cancel") } }
+        )
+    }
+
+    // Broadcast Announcement Dialog (All Active Users Across All Platforms)
+    if (showBroadcastDialog) {
+        var title by remember { mutableStateOf("M-Sageer Pay Update") }
+        var body by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showBroadcastDialog = false },
+            title = { Text("Broadcast Push to All Users") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Delivers a real-time push notification to all registered Android, iOS, and Web devices.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") })
+                    OutlinedTextField(value = body, onValueChange = { body = it }, label = { Text("Announcement Message") }, minLines = 3)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        adminViewModel.broadcastAnnouncementToAll(title, body)
+                        showBroadcastDialog = false
+                    },
+                    enabled = title.trim().length >= 2 && body.trim().length >= 2
+                ) { Text("Broadcast Now") }
+            },
+            dismissButton = { TextButton(onClick = { showBroadcastDialog = false }) { Text("Cancel") } }
         )
     }
 }

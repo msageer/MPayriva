@@ -1,6 +1,7 @@
 package com.example
 
 import android.Manifest
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -65,6 +66,7 @@ import com.example.data.model.TransactionRecord
 import com.example.data.remote.TrustedBackendClient
 import com.example.data.repository.FintechRepository
 import com.example.notifications.FintechNotificationManager
+import com.example.notifications.NotificationDeepLink
 import com.example.ui.components.InlineStatusBanner
 import com.example.ui.screens.AccountRegistrationScreen
 import com.example.ui.screens.AdminDashboardScreen
@@ -84,17 +86,41 @@ import com.example.viewmodel.UiState
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+    private val _pendingDeepLink = MutableStateFlow<NotificationDeepLink?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        FintechNotificationManager.ensureChannel(applicationContext)
+        FintechNotificationManager.ensureAllChannels(applicationContext)
+        captureDeepLink(intent)
         enableEdgeToEdge()
         setContent {
             MSageerFintechTheme {
-                AppNavigation()
+                AppNavigation(
+                    pendingDeepLinkFlow = _pendingDeepLink.asStateFlow(),
+                    onDeepLinkConsumed = { _pendingDeepLink.value = null }
+                )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        captureDeepLink(intent)
+    }
+
+    private fun captureDeepLink(intent: Intent?) {
+        val parsed = FintechNotificationManager.parseDeepLink(intent) ?: return
+        _pendingDeepLink.value = parsed
+        FintechNotificationManager.clearDeepLinkExtras(intent)
     }
 }
 
@@ -118,7 +144,10 @@ private sealed interface OverlayRoute {
 }
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(
+    pendingDeepLinkFlow: StateFlow<NotificationDeepLink?>,
+    onDeepLinkConsumed: () -> Unit
+) {
     val auth = Firebase.auth
     val currentUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
     val user = currentUser
@@ -130,7 +159,9 @@ fun AppNavigation() {
             AuthenticatedFintechShell(
                 currentUserId = user.uid,
                 userEmail = user.email.orEmpty(),
-                userDisplayName = user.displayName.orEmpty()
+                userDisplayName = user.displayName.orEmpty(),
+                pendingDeepLinkFlow = pendingDeepLinkFlow,
+                onDeepLinkConsumed = onDeepLinkConsumed
             )
         }
     }
@@ -140,7 +171,9 @@ fun AppNavigation() {
 private fun AuthenticatedFintechShell(
     currentUserId: String,
     userEmail: String,
-    userDisplayName: String
+    userDisplayName: String,
+    pendingDeepLinkFlow: StateFlow<NotificationDeepLink?>,
+    onDeepLinkConsumed: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -186,8 +219,10 @@ private fun AuthenticatedFintechShell(
         contract = ActivityResultContracts.RequestPermission()
     ) { /* Permission result handled gracefully by FintechNotificationManager */ }
 
+    val pendingDeepLink by pendingDeepLinkFlow.collectAsStateWithLifecycle()
+
     LaunchedEffect(currentUserId) {
-        FintechNotificationManager.ensureChannel(context.applicationContext)
+        FintechNotificationManager.ensureAllChannels(context.applicationContext)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             !FintechNotificationManager.hasNotificationPermission(context)
         ) {
@@ -196,11 +231,11 @@ private fun AuthenticatedFintechShell(
     }
 
     val loadedProfile = (profileState as? UiState.Success)?.data
-    LaunchedEffect(currentUserId, loadedProfile != null) {
+    LaunchedEffect(currentUserId, loadedProfile != null, isBackendConfigured) {
         if (loadedProfile != null) {
             val token = FintechNotificationManager.fetchCurrentFcmToken()
-            if (!token.isNullOrBlank() && token != loadedProfile.fcmToken) {
-                fintechViewModel.syncFcmToken(token)
+            if (!token.isNullOrBlank()) {
+                fintechViewModel.syncFcmToken(context.applicationContext, token)
             }
         }
     }
@@ -218,11 +253,13 @@ private fun AuthenticatedFintechShell(
             currentList.forEach { n ->
                 val notifKey = n.id.ifBlank { "${n.reference}_${n.title}_${n.createdAt?.seconds ?: 0L}" }
                 if (seenNotificationIds.add(notifKey) && !n.read) {
-                    FintechNotificationManager.showTransactionNotification(
+                    FintechNotificationManager.showNotification(
                         context = context.applicationContext,
                         title = n.title,
                         body = n.body,
-                        notificationKey = notifKey
+                        type = n.type,
+                        reference = n.reference,
+                        notificationId = n.id.ifBlank { notifKey }
                     )
                 }
             }
@@ -230,7 +267,12 @@ private fun AuthenticatedFintechShell(
     }
 
     val performSignOut: () -> Unit = {
-        signOutUser(credentialManager = credentialManager, scope = scope)
+        scope.launch {
+            withContext(NonCancellable) {
+                fintechViewModel.unregisterCurrentDeviceToken(context.applicationContext)
+            }
+            signOutUser(credentialManager = credentialManager, scope = scope)
+        }
     }
 
     if (adminResolutionState == null) {
@@ -312,15 +354,10 @@ private fun AuthenticatedFintechShell(
                     onDismissBanner = fintechViewModel::clearBanner,
                     onSignOut = performSignOut,
                     onReturnToAdmin = if (isAdmin) { { adminViewingCustomerApp = false } } else null,
-                    onSubmitRegistration = { type, name, phone, bizName, contact, address, category, pin ->
+                    onSubmitRegistration = { name, phone, pin ->
                         fintechViewModel.completeRegistration(
-                            accountType = type,
                             fullName = name,
                             phoneNumber = phone,
-                            businessName = bizName,
-                            contactPerson = contact,
-                            businessAddress = address,
-                            businessCategory = category,
                             pin4Digits = pin
                         )
                     }
@@ -337,6 +374,53 @@ private fun AuthenticatedFintechShell(
                 val tickets = (ticketsState as? UiState.Success)?.data.orEmpty()
                 val notifications = (notificationsState as? UiState.Success)?.data.orEmpty()
                 val unreadCount = notifications.count { !it.read }
+
+                LaunchedEffect(pendingDeepLink, transactions) {
+                    val link = pendingDeepLink ?: return@LaunchedEffect
+                    link.notificationId?.takeIf { it.isNotBlank() }?.let { nid ->
+                        if (notifications.any { it.id == nid && !it.read }) {
+                            fintechViewModel.markNotificationRead(nid)
+                        }
+                    }
+                    when (link.route.lowercase()) {
+                        "transaction_receipt" -> {
+                            val match = link.reference?.let { ref ->
+                                transactions.firstOrNull { it.reference == ref || it.id == ref }
+                            }
+                            overlayRoute = OverlayRoute.None
+                            activeTab = MainTab.TRANSACTIONS
+                            if (match != null) {
+                                selectedReceiptTx = match
+                                onDeepLinkConsumed()
+                            } else if (transactionsState is UiState.Success) {
+                                onDeepLinkConsumed()
+                            }
+                        }
+                        "history", "transactions" -> {
+                            overlayRoute = OverlayRoute.None
+                            activeTab = MainTab.TRANSACTIONS
+                            onDeepLinkConsumed()
+                        }
+                        "wallet" -> {
+                            overlayRoute = OverlayRoute.None
+                            activeTab = MainTab.WALLET
+                            onDeepLinkConsumed()
+                        }
+                        "support" -> {
+                            overlayRoute = OverlayRoute.Support(prefilledReference = link.reference)
+                            onDeepLinkConsumed()
+                        }
+                        "profile" -> {
+                            overlayRoute = OverlayRoute.None
+                            activeTab = MainTab.PROFILE
+                            onDeepLinkConsumed()
+                        }
+                        else -> {
+                            overlayRoute = OverlayRoute.Notifications
+                            onDeepLinkConsumed()
+                        }
+                    }
+                }
 
                 when (val overlay = overlayRoute) {
                     is OverlayRoute.Support -> {
@@ -555,7 +639,7 @@ private fun AuthenticatedFintechShell(
                             TransactionReceiptDialog(
                                 transaction = tx,
                                 isSubmitting = isSubmitting,
-                                businessHeader = profile.displayTitle(),
+                                sheetHeader = profile.displayTitle(),
                                 onDismiss = {
                                     selectedReceiptTx = null
                                     fintechViewModel.dismissLastVoucherReceipt()

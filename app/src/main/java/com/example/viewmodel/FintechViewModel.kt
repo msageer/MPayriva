@@ -1,12 +1,14 @@
 package com.example.viewmodel
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.data.firebase.extractFirestoreRootError
-import com.example.data.model.AccountType
 import com.example.data.model.CustomerNotification
 import com.example.data.model.EpinVoucherRecord
+import com.example.notifications.FintechNotificationManager
 import com.example.data.model.LedgerEntry
 import com.example.data.model.PlatformConfig
 import com.example.data.model.ServiceCatalogItem
@@ -206,26 +208,16 @@ class FintechViewModel(
     }
 
     fun completeRegistration(
-        accountType: AccountType,
         fullName: String,
         phoneNumber: String,
-        businessName: String?,
-        contactPerson: String?,
-        businessAddress: String?,
-        businessCategory: String?,
         pin4Digits: String,
         onComplete: () -> Unit = {}
     ) {
         viewModelScope.launch {
             _isSubmitting.value = true
             val result = repository.createUserProfile(
-                accountType = accountType,
                 fullName = fullName,
                 phoneNumber = phoneNumber,
-                businessName = businessName,
-                contactPerson = contactPerson,
-                businessAddress = businessAddress,
-                businessCategory = businessCategory,
                 pin4Digits = pin4Digits
             )
             _isSubmitting.value = false
@@ -241,10 +233,6 @@ class FintechViewModel(
     fun updateProfile(
         fullName: String,
         phoneNumber: String,
-        businessName: String?,
-        contactPerson: String?,
-        businessAddress: String?,
-        businessCategory: String?,
         biometricEnabled: Boolean
     ) {
         viewModelScope.launch {
@@ -252,10 +240,6 @@ class FintechViewModel(
             val result = repository.updateUserProfile(
                 fullName = fullName,
                 phoneNumber = phoneNumber,
-                businessName = businessName,
-                contactPerson = contactPerson,
-                businessAddress = businessAddress,
-                businessCategory = businessCategory,
                 biometricEnabled = biometricEnabled
             )
             _isSubmitting.value = false
@@ -342,9 +326,40 @@ class FintechViewModel(
         }
     }
 
-    fun syncFcmToken(token: String) {
+    fun syncFcmToken(context: Context, token: String) {
+        val cleanToken = token.trim()
+        if (cleanToken.isEmpty()) return
+        val deviceId = FintechNotificationManager.getOrCreateInstallDeviceId(context)
+        val deviceName = FintechNotificationManager.buildDeviceDisplayName()
+        val appVersion = BuildConfig.VERSION_NAME
         viewModelScope.launch {
-            repository.saveFcmToken(token)
+            repository.registerDeviceTokenFirestore(
+                deviceId = deviceId,
+                token = cleanToken,
+                appVersion = appVersion,
+                deviceName = deviceName
+            )
+            if (backendClient.isConfigured) {
+                backendClient.registerPushToken(
+                    token = cleanToken,
+                    deviceId = deviceId,
+                    appVersion = appVersion,
+                    deviceName = deviceName
+                )
+            }
+        }
+    }
+
+    suspend fun unregisterCurrentDeviceToken(context: Context) {
+        val deviceId = FintechNotificationManager.getOrCreateInstallDeviceId(context)
+        val token = FintechNotificationManager.fetchCurrentFcmToken()
+        runCatching {
+            if (backendClient.isConfigured) {
+                backendClient.unregisterPushToken(deviceId = deviceId, token = token)
+            }
+        }
+        runCatching {
+            repository.unregisterDeviceTokenFirestore(deviceId = deviceId, token = token)
         }
     }
 
